@@ -1,0 +1,10 @@
+domains:
+  - website-auditor
+node_version: "22"
+secured: true
+services:
+  - mongo
+  - rustfs
+proxy:
+  command: npm run prod
+  port: 3100
