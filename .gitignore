@@ -13,3 +13,25 @@ exports/
 
 # TypeScript incremental cache
 *.tsbuildinfo
+
+# Local verification / deployment artifacts (never commit secrets or evidence)
+storage/test-reports/
+storage/generated/
+*.patch.rej
+*.orig
+.auditor-update-stage/
+
+# Local development diagnostics and temporary script output
+*.pyc
+__pycache__/
+.npm/
+.auditor-tmp/
+*.swp
+.env.*
+!.env.example
+# Portable credentials backup exports (encrypted backups still must not be committed)
+*.encrypted.json
+website-auditor-config-*.json
+
+# Installer snapshots created by the validation hotfix.
+.auditor-fix-backups/

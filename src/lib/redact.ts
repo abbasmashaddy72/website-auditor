@@ -29,6 +29,12 @@ export function escapeHtml(value: string): string {
 export function redactUrl(raw: string): string {
   try {
     const u = new URL(raw);
+    // URLs embedded in third-party resources may contain Basic Auth credentials.
+    // Never surface those values in exported diagnostics or worker logs.
+    if (u.username) u.username = 'REDACTED';
+    if (u.password) u.password = 'REDACTED';
+    if (/(?:token|password|secret|key|auth|session|jwt|signature|code|csrf|credential)[=:]/i.test(u.hash))
+      u.hash = '#[REDACTED]';
     for (const key of u.searchParams.keys())
       if (/(?:token|password|secret|key|auth|session|jwt|signature|code|csrf|credential)/i.test(key))
         u.searchParams.set(key, '[REDACTED]');

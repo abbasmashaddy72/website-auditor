@@ -314,3 +314,725 @@ body {
     transition: none;
   }
 }
+/* Shared keyboard-accessible controls: use semantic tokens for both color modes. */
+.ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.55rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    background 0.16s,
+    transform 0.16s;
+}
+.ui-button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.ui-button:focus-visible,
+.ui-tooltip-anchor :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.ui-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ui-button--primary {
+  background: #4568e8;
+  color: #fff;
+  border-color: #4568e8;
+}
+.ui-button--primary:hover:not(:disabled) {
+  background: #3654c2;
+}
+.ui-button--success {
+  background: #0f8052;
+  color: #fff;
+  border-color: #0f8052;
+}
+.ui-button--warning {
+  background: #a86410;
+  color: #fff;
+  border-color: #a86410;
+}
+.ui-button--danger {
+  background: #bc2e44;
+  color: #fff;
+  border-color: #bc2e44;
+}
+.ui-button--outline {
+  background: transparent;
+}
+.ui-button--small {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.76rem;
+}
+.ui-button--large {
+  padding: 0.75rem 1.1rem;
+  font-size: 0.9rem;
+}
+.ui-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ui-spin 0.8s linear infinite;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ui-tooltip-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.ui-tooltip {
+  pointer-events: none;
+  position: absolute;
+  z-index: 150;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #172337;
+  color: #fff;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  max-width: 230px;
+  min-width: max-content;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s;
+}
+.ui-tooltip--open {
+  opacity: 1;
+  visibility: visible;
+}
+.ui-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.58);
+}
+.ui-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 650px);
+  max-height: min(92dvh, 900px);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: 0 22px 75px #0004;
+}
+.ui-modal-header,
+.ui-modal-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.ui-modal-footer {
+  justify-content: flex-end;
+  border-bottom: 0;
+  border-top: 1px solid var(--line);
+}
+.ui-modal-body {
+  overflow: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+  padding: 20px;
+}
+.ui-modal-footer--danger {
+  border-top-color: #dc596b44;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-button,
+  .ui-tooltip {
+    transition: none;
+  }
+  .ui-spinner {
+    animation: none;
+  }
+}
+@media (max-width: 600px) {
+  .ui-modal-backdrop {
+    padding: 8px;
+  }
+  .ui-modal {
+    max-height: 95dvh;
+  }
+  .ui-modal-header,
+  .ui-modal-body,
+  .ui-modal-footer {
+    padding: 12px;
+  }
+}
+/* Shared scan-history filters and batch grouping. */
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  padding: 0 0.35rem;
+  background: var(--hover);
+  font-size: 11px;
+}
+.btn.primary .tab-count {
+  background: #ffffff2b;
+  color: #fff;
+}
+.batch-parent {
+  background: var(--hover);
+}
+.batch-parent td {
+  padding: 12px 18px;
+}
+.batch-parent button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.batch-child td:first-child {
+  padding-left: 28px;
+}
+.data-table tbody tr:hover:not(.batch-parent) {
+  background: var(--hover);
+}
+@media (max-width: 640px) {
+  .table-wrap {
+    max-width: calc(100vw - 1.5rem);
+  }
+  .ui-modal {
+    max-width: calc(100vw - 16px);
+  }
+}
+
+/* Shared accessible UI primitives. */
+.ui-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.ui-tab {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 9px;
+  min-height: 38px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ui-tab:hover {
+  background: var(--hover);
+}
+.ui-tab--active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+.ui-tab--active .tab-count {
+  background: #ffffff30;
+}
+.ui-checkbox {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.ui-alert {
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.ui-alert--info {
+  color: #1847a3;
+  border-color: #a8c8ff;
+  background: #eaf2ff;
+}
+.ui-alert--success {
+  color: #136b43;
+  border-color: #9fe3bf;
+  background: #e9f9f0;
+}
+.ui-alert--warning {
+  color: #8a4c12;
+  border-color: #f4d096;
+  background: #fff6e6;
+}
+.ui-alert--danger {
+  color: #af2734;
+  border-color: #f1adb5;
+  background: #fff0f2;
+}
+.dark .ui-alert--info {
+  color: #b8d1ff;
+  background: #182844;
+  border-color: #365a90;
+}
+.dark .ui-alert--success {
+  color: #abf1ce;
+  background: #143a2b;
+  border-color: #28684b;
+}
+.dark .ui-alert--warning {
+  color: #ffdb9e;
+  background: #423019;
+  border-color: #866332;
+}
+.dark .ui-alert--danger {
+  color: #ffbfc7;
+  background: #421d29;
+  border-color: #804152;
+}
+.ui-empty {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--sub);
+  font-size: 13px;
+}
+.table-wrap {
+  overflow-x: auto;
+  width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+:where(button, a, input, select, textarea, [role='tab']):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  .ui-modal-footer {
+    flex-wrap: wrap;
+  }
+  .ui-modal-footer .ui-button {
+    flex: 1;
+  }
+  .data-table {
+    min-width: 640px;
+  }
+  .ui-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+  }
+  .ui-tab {
+    flex-shrink: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.ui-modal--small {
+  width: min(100%, 440px);
+}
+.ui-modal--large {
+  width: min(100%, 900px);
+}
+/* The sticky toolbar must be opaque enough that the page heading never bleeds through. */
+.topbar-glass {
+  background: var(--background);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+@media (max-width: 640px) {
+  .page-h {
+    font-size: 21px;
+  }
+  .surface {
+    border-radius: 12px;
+  }
+  .input,
+  .ui-button,
+  .btn {
+    min-height: 38px;
+  }
+  .ui-modal-body {
+    padding: 14px;
+  }
+}
+
+/* Shared sortable tables and dialog/control accessibility. */
+.ui-table-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.2rem 0;
+}
+.ui-table-sort:hover {
+  color: var(--accent);
+}
+.ui-table-sort:focus-visible,
+.ui-button:focus-visible,
+.ui-tab:focus-visible,
+.btn:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.ui-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (max-width: 640px) {
+  .ui-modal {
+    width: min(100vw - 1.5rem, 100%);
+    max-height: calc(100dvh - 2rem);
+  }
+  .data-table {
+    min-width: 640px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-button,
+  .btn,
+  .ui-tab,
+  .ui-spinner {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Shared action hierarchy — danger buttons must remain legible on hover in both themes.
+   Keep deletion quiet in row/card actions; reserve solid danger for confirmed operations. */
+.ui-button {
+  min-height: 38px;
+  max-width: 100%;
+  line-height: 1.25;
+}
+.ui-button > svg {
+  flex-shrink: 0;
+}
+.ui-button--primary:hover:not(:disabled) {
+  background: #3654c2;
+  border-color: #3654c2;
+  color: #fff;
+}
+.ui-button--success:hover:not(:disabled) {
+  background: #086a42;
+  border-color: #086a42;
+  color: #fff;
+}
+.ui-button--warning:hover:not(:disabled) {
+  background: #854e0c;
+  border-color: #854e0c;
+  color: #fff;
+}
+.ui-button--danger:hover:not(:disabled) {
+  background: #9f2037;
+  border-color: #9f2037;
+  color: #fff;
+}
+.ui-button--danger-outline {
+  color: #aa2941;
+  background: #fff6f7;
+  border-color: #f0c1ca;
+}
+.ui-button--danger-outline:hover:not(:disabled) {
+  color: #89152b;
+  background: #ffe6eb;
+  border-color: #eaa0ae;
+}
+.dark .ui-button--danger-outline {
+  color: #ffabb8;
+  background: #39202b;
+  border-color: #7a3747;
+}
+.dark .ui-button--danger-outline:hover:not(:disabled) {
+  color: #fff;
+  background: #622a39;
+  border-color: #a94a61;
+}
+.website-card__actions .ui-tooltip-anchor {
+  min-width: 0;
+  width: 100%;
+}
+.website-card__actions .ui-button {
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+  font-size: 12px;
+}
+.website-card__actions .ui-button span {
+  overflow-wrap: anywhere;
+}
+.ui-tooltip {
+  max-width: min(240px, calc(100vw - 2rem));
+  min-width: 0;
+  width: max-content;
+  white-space: normal;
+  text-align: center;
+}
+@media (max-width: 380px) {
+  .website-card__actions .ui-button {
+    font-size: 11px;
+    padding: 8px 6px;
+  }
+}
+
+.ui-modal--fullscreen {
+  width: calc(100vw - 1.5rem);
+  max-width: none;
+  height: calc(100dvh - 1.5rem);
+  max-height: none;
+}
+.ui-modal--fullscreen .ui-modal-body {
+  flex: 1;
+}
+@media (max-width: 640px) {
+  .ui-modal--fullscreen {
+    width: calc(100vw - 0.5rem);
+    height: calc(100dvh - 0.5rem);
+  }
+}
+
+/* Consistent interactive affordances and state colors, including dark mode. */
+:where(
+  a[href],
+  button:not(:disabled),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true'])
+) {
+  cursor: pointer;
+}
+:where(button:disabled, [role='button'][aria-disabled='true'], [aria-busy='true']:disabled) {
+  cursor: not-allowed;
+}
+.ui-button,
+.btn,
+.ui-tab,
+.ui-table-sort {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.ui-button:hover:not(:disabled),
+.btn:hover:not(:disabled) {
+  filter: brightness(0.97);
+}
+.ui-button:active:not(:disabled),
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  filter: brightness(0.92);
+}
+.ui-button--primary,
+.ui-button--success,
+.ui-button--warning,
+.ui-button--danger {
+  color: #fff;
+}
+.ui-button--outline:hover:not(:disabled),
+.ui-button--secondary:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+.ui-button--danger-outline:active:not(:disabled) {
+  background: #ffd2dc;
+  color: #89152b;
+}
+.dark .ui-button--danger-outline:active:not(:disabled) {
+  background: #81364a;
+  color: #fff;
+}
+.btn.primary:hover:not(:disabled) {
+  color: #fff;
+  border-color: #3654c2;
+  background: #3654c2;
+}
+.btn.primary:active:not(:disabled) {
+  color: #fff;
+  background: #29459f;
+}
+.btn.danger:hover:not(:disabled) {
+  background: #fff0f2;
+  border-color: #d88b9c;
+  color: #9f2037;
+}
+.dark .btn.danger:hover:not(:disabled) {
+  background: #42202c;
+  border-color: #9c5262;
+  color: #ffc4d0;
+}
+.ui-tab--active:hover,
+.ui-tab--active:focus-visible {
+  background: var(--accent);
+  color: #fff;
+  filter: brightness(0.92);
+}
+.ui-tab--active:active {
+  filter: brightness(0.83);
+}
+:where(.ui-tab, .ui-table-sort, .finding-group__summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+/* Four equal website actions. Never use a horizontally scrolling card toolbar. */
+.website-card {
+  container-type: inline-size;
+}
+.website-card__actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: visible;
+  min-width: 0;
+}
+.website-card__actions .ui-tooltip-anchor {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+.website-card__actions .ui-tooltip-anchor > span:first-child {
+  display: block;
+  height: 100%;
+}
+.website-card__actions .ui-button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 36px;
+  padding: 7px 3px;
+  gap: 3px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.website-card__actions .ui-button svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+@container (max-width: 350px) {
+  .website-card__actions .ui-button svg {
+    display: none;
+  }
+  .website-card__actions .ui-button {
+    font-size: 11px;
+    padding-inline: 2px;
+  }
+}
+/* Drawer is a Dialog placement, not a separate unmanaged overlay. */
+.ui-modal-backdrop--right {
+  justify-content: flex-end;
+  padding: 0;
+}
+.ui-modal--right {
+  width: min(100%, 900px);
+  max-height: 100dvh;
+  height: 100dvh;
+  border-radius: 0;
+  border-block: 0;
+  border-right: 0;
+}
+.ui-modal--right .ui-modal-header {
+  padding: 18px 22px;
+  align-items: flex-start;
+}
+.ui-modal--right .ui-modal-body {
+  flex: 1;
+  padding: 18px 22px 28px;
+}
+.ui-modal-description {
+  margin-top: 7px;
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1.5;
+}
+@media (max-width: 640px) {
+  .ui-modal-backdrop--right {
+    padding: 0;
+  }
+  .ui-modal--right {
+    width: 100%;
+    max-width: none;
+    border-radius: 0;
+  }
+  .ui-modal--right .ui-modal-header,
+  .ui-modal--right .ui-modal-body {
+    padding: 14px;
+  }
+}
+/* Group headers are explicit expand controls; findings and selection remain individually accessible. */
+.finding-group__summary {
+  cursor: pointer;
+  list-style: none;
+}
+.finding-group__summary::-webkit-details-marker {
+  display: none;
+}
+.finding-group__summary::after {
+  content: 'Expand';
+  color: var(--sub);
+  font-size: 11px;
+  font-weight: 600;
+}
+.finding-group details[open] > .finding-group__summary::after {
+  content: 'Collapse';
+}
+.finding-group__select {
+  cursor: pointer;
+}
+.finding-group__row:hover {
+  background: var(--hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-button:active:not(:disabled),
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+/* Severity badges must not inherit an unstyled state. */
+.pill.error {
+  background: #ffe2e3;
+  color: #b32838;
+}
+.dark .pill.error {
+  background: #552731;
+  color: #ffc0cc;
+  filter: none;
+}
+.dark .ui-tab--active,
+.dark .ui-tab--active:hover,
+.dark .ui-tab--active:focus-visible {
+  color: #101827;
+}

@@ -15,3 +15,11 @@ test('redact sensitive query fields before exporting URLs', () => {
   assert.doesNotMatch(safe, /secret-xyz/);
   assert.match(safe, /page=2/);
 });
+
+test('URL redaction also covers Basic Auth userinfo and sensitive fragments', () => {
+  const value = redactUrl(
+    'https://admin:password123@demo.test/report?key=confidential#access_token=fragmentsecret',
+  );
+  assert.doesNotMatch(value, /password123|confidential|fragmentsecret|admin@/);
+  assert.match(value, /REDACTED/);
+});

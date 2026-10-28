@@ -1,4 +1,5 @@
 import type { PageTiming } from './performance';
+import type { ReviewEvent, ReviewState } from './review';
 import type { ObjectId } from 'mongodb';
 export type ScanState =
   | 'queued'
@@ -45,6 +46,8 @@ export interface AuthProfile {
   siteId: string;
   name: string;
   loginUrl: string;
+  profileNameKey?: string;
+  archivedAt?: Date;
   startUrl?: string;
   username: string;
   encryptedPassword: string;
@@ -62,6 +65,10 @@ export interface Scan {
   authProfileName?: string;
   authenticatedLandingUrl?: string;
   mode: 'crawl' | 'retry' | 'import';
+  /** Immutable link to a previous scan when manually rerun. */
+  rerunOfScanId?: string;
+  /** Optional grouping key for multiple scan jobs submitted as a single operation. */
+  batchId?: string;
   urls?: string[];
   options?: Partial<Pick<Site, 'maxPages' | 'maxDepth' | 'concurrency' | 'timeoutMs'>>;
   status: ScanState;
@@ -120,12 +127,20 @@ export interface Issue {
   status: IssueStatus;
   latestHttpStatus?: number;
   firstDetectedAt: Date;
+  /** Immutable origin for findings created after this upgrade; older findings keep original history. */
+  firstScanId?: string;
+  firstPageId?: string;
   lastDetectedAt: Date;
   lastVerifiedAt?: Date;
   scanId: string;
   pageId: string;
   occurrences: number;
-  history: Array<{ at: Date; scanId: string; status?: number; classification: string }>;
+  history: Array<{ at: Date; scanId: string; pageId?: string; status?: number; classification: string }>;
+  /** Last independently verified recovery. Original failing scan/page IDs are never replaced. */
+  lastResolution?: { at: Date; scanId: string; pageId: string; httpStatus?: number };
+  reviewState?: ReviewState;
+  reviewHistory?: ReviewEvent[];
+  reviewVersion?: number;
 }
 
 export interface WorkerInfo {

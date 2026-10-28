@@ -1,265 +1,159 @@
-# Universal Website Auditor
+# Website Auditor
 
-A standalone Next.js App Router and Playwright website diagnostic platform. Run on the **host machine** alongside Lerd, inspect approved `.test`, loopback, private LAN and public websites, and store structured results in MongoDB and private files in RustFS. The dashboard and scanner do not need to be installed into, or modify, audited websites.
+Independent, authorized website diagnostics on Next.js, React, TypeScript, Tailwind CSS 4, MongoDB, RustFS, and host-native Playwright. Supports Lerd `.test` sites, permitted localhost/LAN endpoints and HTTPS websites. The target application's code is not modified by ordinary scanning.
 
-> **Status:** Substantial installable implementation; local environment and full integration verification are **not completed**. See [VERIFICATION.md](./VERIFICATION.md) and [KNOWN_LIMITATIONS.md](./KNOWN_LIMITATIONS.md) before relying on it. Do not treat this archive as independently certified production software.
+## Prerequisites and local development
 
-## Architecture
-
-```text
-Browser -> HTTPS website-auditor.test -> Lerd nginx -> host-native Next.js
-                                              | MongoDB (sites, scans, queue leases, pages, issues)
-                   dedicated npm run worker ---| RustFS (HTML, PNG, traces, reports)
-                                              | host DNS / Lerd .test / localhost / LAN / public
-
-Audited website --> browser-based GET crawl, optional authenticated session --> evidence
-Local project source (opt-in) --> read-only investigation --> approved Git diff --> retry
-```
-
-### Requirements
-
-- CachyOS Linux with existing Lerd 1.24+ (host-proxy capability).
-- Node 22, npm, Fish; Chromium dependencies required by Playwright.
-- Lerd's MongoDB **preset** installed and running; RustFS built-in service running.
-- Host DNS resolves your own `.test` domains; the worker must run in the **host network environment**, not a new container.
-- Independent dedicated MongoDB database and private RustFS bucket with credentials stored only in `.env`.
-- Administrator approval for _every_ target; allowlisted hosts, ports, redirects and loopback/LAN scopes are enforced.
-
-## Installation on Fish
-
-This bundle unpacks to `website-auditor/`. If you saved the download in `~/Downloads`:
-
-```fish
-mkdir -p ~/Documents/Project-Sites/Local
-unzip ~/Downloads/website-auditor.zip -d ~/Documents/Project-Sites/Local
-cd ~/Documents/Project-Sites/Local/website-auditor
-
-node --version
-npm --version
-lerd --version
-lerd service list
-
-# Only if MongoDB isn't already installed with Lerd:
-lerd service preset mongo
-lerd service start mongo
-lerd service start rustfs
-
-cp .env.example .env
-# IMPORTANT: edit .env and enter real, private S3 credentials and independent secrets.
-openssl rand -hex 32   # Copy output to SESSION_SECRET
-openssl rand -hex 32   # Copy a DIFFERENT output to AUTH_ENCRYPTION_KEY
-openssl rand -base64 32  # Use as AUDITOR_ADMIN_PASSWORD
-nano .env
-
-npm install
-npx playwright install chromium
-# If Chromium is missing system libraries, follow Playwright's Linux dependency instructions.
-
-npm run test
-npm run typecheck
-npm run lint
-npm run build
-
-# Link only this directory; Lerd supervises 'npm run prod' using host proxy.
-# Review the Lerd command approval prompt before consenting.
-lerd link website-auditor
-lerd secure
-
-# Run separately in a second Fish terminal:
-npm run worker
-
-# Open HTTPS dashboard. Sign in with AUDITOR_ADMIN_PASSWORD.
-lerd open
-```
-
-Expected local UI: `https://website-auditor.test`. **Lerd does not automatically run the independent Playwright worker** merely because the proxy site is linked; the worker must be supervised separately. `npm run prod` expects a compiled `.next` build; run `npm run build` before linking or restarting its Lerd host-proxy service.
-
-### Recommended background worker under systemd --user (Fish)
-
-```fish
-cd ~/Documents/Project-Sites/Local/website-auditor
-mkdir -p ~/.config/systemd/user
-set -l npm_path (command -s npm)
-set -l node_bin_dir (dirname (command -s node))
-set -l root (pwd)
-printf '[Unit]\nDescription=Website Auditor Playwright Worker\nAfter=network-online.target\n[Service]\nType=simple\nWorkingDirectory=%s\nEnvironment=PATH=%s:/usr/local/bin:/usr/bin:/bin\nExecStart=%s run worker\nRestart=always\nRestartSec=5\n[Install]\nWantedBy=default.target\n' "$root" "$node_bin_dir" "$npm_path" > ~/.config/systemd/user/website-auditor-worker.service
-systemctl --user daemon-reload
-systemctl --user enable --now website-auditor-worker.service
-systemctl --user status website-auditor-worker.service
-journalctl --user -u website-auditor-worker.service -f
-```
-
-This unit belongs exclusively to the auditor. No service units belonging to Insure360, Taskloom or other sites are edited.
-
-### Lerd configuration
-
-Bundled `.lerd.yaml`:
-
-```yaml
-domains:
-  - website-auditor
-secured: true
-node_version: '22'
-proxy:
-  command: npm run prod
-  port: 3100
-services:
-  - mongo
-  - rustfs
-```
-
-The structured proxy format matches the supplied, working Taskloom project and explicitly reserves port 3100 for Website Auditor (Taskloom remains on 3000). Verify your installed Lerd version and settings before linking. If your installed Lerd supports only a different schema, use that verified schema. The bundled configuration deliberately does not add `Containerfile.lerd`: containerization can break loopback and custom `.test` domain access.
-
-### MongoDB & RustFS configuration
-
-- Lerd's documented MongoDB host access: `mongodb://root:lerd@127.0.0.1:27017/?authSource=admin` for a **local preset**. Use dedicated DB credentials rather than defaults for anything shared or production. `MONGO_DATABASE=website_auditor` is separate from target applications.
-- Lerd-managed RustFS exposes an S3-compatible endpoint. The `.env.example` uses `http://127.0.0.1:9000` as an example only: **verify the port, access/secret keys, and reachable endpoint in your Lerd services view**. Create a private bucket or allow the worker to create one using sufficient permissions. Prefer dedicated scoped keys.
-- Never commit `.env`; do not put service credentials in `NEXT_PUBLIC_*` variables.
-- Development certificates: trust the Lerd CA on the host running Playwright. Enable **Ignore invalid TLS** only for a specifically approved development site when required. Production site registration rejects this option.
-- `LOCAL_SOURCE_ROOT` is optional. Set to a parent path explicitly approved for reading/editing local projects; leave empty to disable investigation and code changes.
-
-## Running modes
-
-| Command                                                                                          | Function                                                                           |
-| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| `npm run dev`                                                                                    | Next.js development dashboard                                                      |
-| `npm run prod` / `npm start`                                                                     | Host-native compiled Next.js dashboard                                             |
-| `npm run worker`                                                                                 | Dedicated persistent Playwright worker                                             |
-| `npm run dev:all`                                                                                | Dashboard and worker in the same terminal for development                          |
-| `npm run build`                                                                                  | Production build                                                                   |
-| `npm run typecheck` / `npm run lint`                                                             | TypeScript and ESLint checks                                                       |
-| `npm run test`                                                                                   | Isolated unit tests                                                                |
-| `npm run scan -- --site https://insure360.test`                                                  | Queue a registered site's crawl                                                    |
-| `npm run scan -- --site http://localhost:5173`                                                   | Queue registered localhost crawl                                                   |
-| `npm run scan:status -- --id SCAN_ID`                                                            | Check scan progress                                                                |
-| `npm run scan:retry -- --scan SCAN_ID`                                                           | Queue verification of failed pages from prior scan                                 |
-| `npm run routes:import -- --site https://insure360.test --file ./routes.json`                    | Import approved safe URLs                                                          |
-| `npm run doctor -- --site https://insure360.test --allow-local`                                  | Check Mongo/RustFS/target resolution                                               |
-| `npm run live -- --site-id SITE_ID --url https://insure360.test/private --profile-id PROFILE_ID` | Open managed headed Playwright browser                                             |
-| `npm run fixture`                                                                                | Start isolated HTTP 200/403/404/500 and JS-error fixture service on 127.0.0.1:8877 |
-
-All custom CLI commands accept `--help`. CLI overrides: `--max-pages`, `--depth`, `--concurrency`, `--timeout`, and `--profile`. Use `--wait --format html|json|csv` to export an offline report into `exports/` after a dedicated worker finishes; `--output` changes the filename. For an **unregistered** site, the CLI requires `--authorize` as an explicit permission acknowledgement; for a loopback / `.test` site also specify `--allow-local`:
-
-```fish
-npm run scan -- --site https://insure360.test --authorize --allow-local
-npm run scan -- --site http://127.0.0.1:8877 --authorize --allow-local --depth 2
-npm run scan -- --site https://example.com --authorize --depth 2
-```
-
-Your host's `.test` resolution works through Lerd; no source changes or special code branches are required to add more sites. The worker checks the approved host/port/DNS scope per request and blocks redirect and resource requests outside that scope. Add necessary CDN hosts only when approved. Requests other than GET/HEAD/OPTIONS are blocked during scans. In the explicit login phase, POST is limited to the configured login path or recognized Livewire update endpoints. Some Livewire and SPA features that require POST requests may therefore be incomplete in read-only scans; see limitations.
-
-## Functional workflow
-
-1. **Sign in** at `https://website-auditor.test`. The dashboard is administrator-restricted.
-2. **Websites → Add website**. Enter exact base URL, environment, approved host/port scope and local/LAN access settings. Check the explicit authorization box.
-3. Optional: **Add auth profile** for each user role. Configure login URL, username/password and selectors; passwords are AES-256-GCM encrypted before storage. Multi-factor login requiring manual action is not automatically bypassed.
-4. **Scans** → select website/profile → **Start scan**. A MongoDB queue record is created and the host-native worker claims it atomically.
-5. **Routes/Errors** → inspect actual HTTP status, browser/runtime errors, screenshot, original/rendered redacted HTML, or download private network evidence.
-6. **Open live** opens the route in the current browser (subject to its _own_ session). For authenticated, independently managed browser inspection, use `npm run live ...` with a registered profile.
-7. **Investigate** uses optional authorized local code path, the relevant Laravel log tail and rule-based diagnosis. You may paste a unified Git diff, validate with `git apply --check`, and apply only after explicit approval; a backup is saved under `.auditor-backups/`. No automatic source modification is performed by scans.
-8. **Retry page** or `scan:retry`: runs a new authenticated browser check. Open issues are only marked verified resolved after a real passed visit. Historical page results and issue history are retained.
-9. **Reports** → download offline HTML, JSON, CSV scan reports. HTML reports include counts, timings and searchable route/error summaries; private evidence stays behind dashboard access.
-
-### Route imports
-
-`npm run routes:import` accepts JSON arrays of URL strings or Laravel `route:list --json` records (`uri`, `method`), CSV (URL in first column) and text (one route per line). GET routes are eligible; API routes, unresolved `{id}` parameters, dangerous action names, cross-host routes and duplicates are skipped. Imports create bounded background scans instead of asking the dashboard to run URLs synchronously.
-
-### Local targets and browser reachability
-
-| Target                          | Worker requirements                                                           |
-| ------------------------------- | ----------------------------------------------------------------------------- |
-| `https://insure360.test`        | Lerd DNS and trusted CA; authorize loopback; confirm virtual host exists      |
-| `https://broker.insure360.test` | Explicitly approved hostname, correct Lerd vhost, matching account profile    |
-| `http://localhost:3000`         | Server listening on worker host and port 3000 authorized                      |
-| `http://127.0.0.1:8000`         | Explicit local permission; app listening on port 8000                         |
-| `https://192.168.1.10:8443`     | Private/LAN permission, port 8443, valid certificate or per-site dev override |
-| `https://example.com`           | Public DNS, certificate validation on, approved host and external permission  |
-
-Host-native workers intentionally resolve these names using the _same host resolver_ as the browser developer workstation. If you later containerize workers, you must separately solve container DNS and host networking; `localhost` in a container is **not** the host.
-
-### Security design
-
-- **App login**: server-side administrator password, signed HTTP-only cookie with 24-hour expiry, strict SameSite and mutation origin checks.
-- **Credentials**: site login passwords encrypted with AES-256-GCM, independent 32-byte hex key; never in public API responses or exported reports.
-- **Target validation**: http/https only; exact approved hosts and ports; DNS checks for private/loopback ranges and metadata IP bans; initial/redirect/subresource checks; no destructive click exploration.
-- **Evidence**: private RustFS keys, authenticated API, strict viewer sandbox, redaction of common secrets. Screenshots and page HTML can still contain confidential content; limit administrator and bucket access accordingly.
-- **Local changes**: optional `LOCAL_SOURCE_ROOT`, source-only patch paths, `git apply --check`, approval, local backups and rollback preparation.
-- **Defense-in-depth needed**: network-level outbound firewall rules and DNS pinning/proxy are still recommended against DNS rebinding. Single-administrator deployment is the intended use, not Internet-exposed multi-tenancy.
-
-### Verification
-
-Run unit tests, build, and then the fixture procedure in [VERIFICATION.md](./VERIFICATION.md). This bundle was generated in a sandbox without Lerd or package registry access: its integration behavior **has not** been verified on your machine.
-
-## Queue visibility, authentication origins and Auto pages (October 2026 update)
-
-- The **Scans** page now polls a live MongoDB-backed activity feed every 2.5 seconds, shows worker heartbeat health (5-second ticks), flags a queued scan when the worker is offline, and surfaces startup errors. Select the terminal icon on a scan for its latest 120 events. Events expire from MongoDB after 14 days; scan history, screenshots and reports retain their existing retention policy.
-- Run `npm run worker` as a separate foreground process for diagnosis, or install the optional user service described above. Lerd's PHP `workers: [horizon]` does not start a Node/Playwright worker.
-- **Queued** cancellation is immediate; **running** cancellation is cooperative (checks between batches) and an active page can take up to its navigation timeout. Pause also takes effect between batches. All actions report success/failure in the dashboard.
-- Duplicate scans with the **same site, auth profile, mode, URLs and explicit scan options** reuse the active scan ID. The MongoDB partial unique index protects simultaneous clicks. Already-existing historical scans are preserved. If a website is reconfigured while a scan is active, let the previous scan finish or cancel it before starting a new one.
-- **Page limit = Auto (`0`)** scans all discoverable authorized pages subject to crawl depth, `AUTO_PAGE_SAFETY_LIMIT` (default 10,000), and `SCAN_TIME_BUDGET_MS` (default 60 minutes). Reaching a limit is logged, and not all application routes are necessarily discoverable by navigating links. Use route imports for gaps.
-- **Schedule interval = 0** disables scheduled scans; the form explicitly accepts zero. Nonzero values are in minutes.
-- **Different hosts and login URLs:** Allow each host in the site scope and each nondefault port explicitly. Extra host entries may be bare hosts or complete http(s) URLs; URL entries automatically include their port. URL paths are ignored by host scope parsing and must be configured as profile start/login URLs. Create separate authentication profiles with independent login URL, password, and optional **Authenticated start URL**. The start URL determines the root page crawled for that profile. For two separate applications with different origin/session rules, register them as separate websites (recommended) rather than relying on cross-domain cookies. Authentication does not silently expand host scope.
-- **Unsafe/logout endpoints:** Scans refuse links and browser requests identified as unsafe actions. The dashboard sign-out button now asks for confirmation and only signs out the Website Auditor administrator.
-- **Theme:** Frosted panels, restrained indigo/cyan accents, responsive gradient grid background, dark and light support, reduced-motion support. No remote design assets or library downloads.
-- **Worker identity:** Leave `WORKER_ID=` blank to generate a unique per-process ID automatically. If setting it manually, each active process must use a different value; duplicate IDs defeat lease-ownership protections.
-- If a scan remains queued: inspect worker health and events, then check `journalctl --user -u website-auditor-worker.service -f`. Test MongoDB and RustFS connectivity from the same host environment. The dashboard is not the worker.
-
-## Live report explorer (no exports required)
-
-Open `https://website-auditor.test/reports` and choose a website and completed scan. Use the HTTP-code, classification, and route/title search fields to query MongoDB in pages of 30 results. Click **Details** to use the existing authenticated evidence viewer, screenshot preview, investigation and retry actions. HTML, JSON and CSV exports remain optional; private RustFS credentials and objects are never exposed by the report list. Report history is only removed by an explicitly confirmed cleanup.
-
-## Automatically supervised Playwright worker (host-native)
-
-The host proxy works independently of Lerd framework detection. In this Lerd installation `lerd link` successfully starts Next.js but `lerd worker list` responds `site ... has no framework assigned`. An embedded host-worker `framework_def` is not a reliable workaround. **Do not keep relinking or assign `framework: laravel`.**
-
-The project's `.lerd.yaml` follows the verified Taskloom host-proxy form without `framework`, `framework_def`, `custom_workers`, or `workers`. Install a separate, restartable user-level service instead:
+- Node.js 22, npm, Lerd host-proxy, MongoDB, RustFS (S3-compatible), and Playwright Chromium.
+- Fish for the worker manager; bash and Python 3 for the verified updater; systemd user units on Linux for production worker supervision.
+- Copy `.env.example` to `.env`; configure your **own** MongoDB/RustFS credentials, admin password, session secret and encryption key. Never check `.env` into Git.
+- Match `.lerd.yaml` host proxy `port: 3100`, and production `HOST=0.0.0.0`, `PORT=3100`. Keep the local reverse proxy and worker separately supervised.
 
 ```fish
 cd ~/Documents/Project-Sites/Experiment/website-auditor
-npm install
+npm ci
+npx playwright install chromium
 npm run build
 lerd link
-fish scripts/install-worker.fish
-systemctl --user --no-pager status website-auditor-worker.service
-journalctl --user -u website-auditor-worker.service -f
+fish scripts/auditor.fish setup
+npm run doctor
 ```
 
-This worker accesses `.test` sites using the host's normal DNS, does not open another listening port, and does not modify other Lerd sites. Do not launch `npm run worker` manually while the systemd unit runs. `WORKER_ID=` should normally remain empty. See [worker guide](docs/LERD_WORKER_AND_PERFORMANCE.md).
+Visit `https://website-auditor.test`. First register an authorized website under **Websites**, configure its approved host/port scope, then create any required auth profile on that site's card. On **Scans**, select the site/profile; authenticated crawls verify login and restrict discovery to the approved panel area. Observe queue progress, Routes, Active Errors, Resolved Findings, Manual Review and Reports.
 
-### Queue backend decision
+## Main commands
 
-MongoDB remains the durable job queue, so **neither Beanstalkd nor Valkey is required for auto-start**. Lerd can provision them as services, but choosing either as the queue backend requires adding and verifying a separate Node client and atomic reservation/acknowledgement implementation; merely adding `services: [beanstalkd]` or `services: [valkey]` does not migrate existing jobs. The current implementation intentionally avoids a second queue technology.
+| Command                                      | Purpose                                          |
+| -------------------------------------------- | ------------------------------------------------ |
+| `npm run dev`                                | Local dashboard, port 3100                       |
+| `npm run prod`                               | Start prebuilt Next.js server for Lerd           |
+| `npm run build`                              | Create production build                          |
+| `npm run worker`                             | Interactive worker actions (terminal only)       |
+| `npm run worker:run`                         | Unattended foreground worker for process manager |
+| `npm run cleanup:check`                      | Preview duplicate historical Markdown files      |
+| `npm run cleanup`                            | Remove only byte-identical archival duplicates   |
+| `npm run worker:manage -- status`            | Inspect managed worker and app                   |
+| `npm run worker:manage -- setup`             | Install/enable/start systemd user worker         |
+| `npm run worker:manage -- logs`              | Follow worker journal                            |
+| `npm run scan -- --site https://example.com` | Authorized CLI crawl                             |
+| `npm run scan:status`                        | CLI scan status                                  |
+| `npm run routes:import`                      | Import explicitly scoped browser pages           |
+| `npm run data:check`                         | Read-only MongoDB integrity sample               |
+| `npm run doctor`                             | CLI diagnostics                                  |
+| `fish scripts/diagnose-502.fish`             | Dedicated Lerd nginx/502 diagnostics             |
+| `npm run format`                             | Prettier formatting                              |
+| `npm run verify`                             | Single verification gate and timestamped report  |
 
-## Safe database cleanup and retention
+Use `npm run dev:all` for temporary foreground development, **not** alongside the supervised production worker. The service unit is `website-auditor-worker.service`; inspect with `systemctl --user status website-auditor-worker.service`.
 
-Settings → **Database & evidence cleanup** has four separate cleanup modes: finished scans and RustFS evidence, verified-resolved issues, old scan events, and stale worker registrations. Choose a website or all auditor websites, and a minimum age in days. **Preview** retrieves eligible record counts without deleting anything. To actually delete, type `DELETE AUDITOR HISTORY`; the server verifies a signed five-minute authorization from the preview.
+## Updates, verification, and rollback
 
-The cleanup is restricted to the configured `MONGO_DATABASE` and the per-scan prefix in the configured private RustFS bucket. Registered sites, authentication profiles, current open issues, and active scans are protected. Finished scans referenced by any issue record are deliberately excluded until the relevant issue history is handled. At most 50 old scans are deleted per execution; repeat the preview if more remain. RustFS objects are deleted first; if RustFS deletion fails, the MongoDB scan is retained. Bulk deletion cannot be undone: back up both MongoDB and RustFS before cleaning large histories.
+The sole update entry point is `scripts/update.sh` (Git unified patches or **manifest-based** ZIPs, not arbitrary source archives):
 
-**Diagnostic interpretation:** `net::ERR_BLOCKED_BY_CLIENT.Inspector` messages are treated as browser Inspector/tooling noise rather than automatically classifying an HTTP 200 page as failed. Intentionally blocked safe-crawl requests are listed in private network evidence; genuine page exceptions, unexpected HTTP 4xx/5xx and important asset/API failures remain actionable. Rerun affected routes after updating to reclassify old errors; historical records are preserved until explicitly cleaned.
+```fish
+bash scripts/update.sh --check ~/Downloads/update.patch
+bash scripts/update.sh --apply ~/Downloads/update.patch
+# Only after reviewing conflicts and approving replacement:
+bash scripts/update.sh --apply --force ~/Downloads/update.zip
+```
 
-## React/ESLint cleanups
+An update ZIP must include `update-manifest.json` (version 1) and `files/<path>` members whose SHA-256 values match the manifest. Supported operations are add, modify, delete and rename. `--check` never changes source; `--apply` backs up affected files under `.auditor-backups/`, formats touched source files, then calls the single verification script before allowed service restarts. The updater never resets MongoDB or RustFS. Git patches with incompatible hunks require manual reconciliation; force cannot override unsafe paths, invalid content, or missing patch context.
 
-The dashboard initial refresh and theme restoration are scheduled after mount; scan timer labels derive from the last successful dashboard refresh. The report explorer resets pagination in filter handlers, and stale responses are not displayed for newly selected filters. Login and logout use Next.js router navigation, and private evidence screenshots are rendered with unoptimized Next.js image components to avoid browser-accessible image optimizer leakage. No ESLint rules have been disabled.
+```fish
+npm run verify
+# equivalently: bash scripts/verify.sh --format  (format then validate)
+# Restore file backups after inspecting the update rollback manifest:
+python3 scripts/update.py --rollback .auditor-backups/<id>
+```
 
-## 2026-10-26: Host-native worker and performance upgrade
+The verification gate includes updater archive safety and deployment-health regression tests before the TypeScript quality checks. A successful build **does not** mean deployment succeeded: inactive service units, failed restarts or failed HTTPS readiness are returned as deployment blockers/failures; no database rollback is performed.
 
-See [`docs/LERD_WORKER_AND_PERFORMANCE.md`](docs/LERD_WORKER_AND_PERFORMANCE.md). Lerd supervises the Next.js dashboard on port 3100; systemd supervises Chromium scans. Format code using `npm run format`, check using `npm run format:check`. New scans provide a Performance tab, screenshot zoom, and saved network details; old scans need a retry to obtain these measurements.
+Timestamped verification logs live in `storage/test-reports/verification/`. Update backups and `ROLLBACK.txt` live under `.auditor-backups/<id>/`. Perform external database and RustFS backups before risky deployments; the source updater does not back up live services/data. Review reported service/HTTPS blockers instead of assuming success.
 
-### HTTP 502 and Fish installer quick diagnosis
+## Scanning and privacy
 
-If Lerd reports that Next.js is `Ready` but `https://website-auditor.test`
-returns 502, run `fish scripts/diagnose-502.fish`. This compares
-`http://127.0.0.1:3100/login` against Lerd HTTPS and prints upstream-related
-nginx configuration and log entries. Do not assume the worker service is
-responsible for a reverse-proxy error.
+The worker persists queue leases and page results to MongoDB, private HTML/screenshots/traces to RustFS, and review decisions as appended audit events. A passed targeted retry may mark an active finding **verified resolved**, preserving its original evidence; unconfirmed retries never remove errors. Navigation-only discovery is the default; never crawl arbitrary file URLs, logout links or write operations.
 
-The repaired `scripts/install-worker.fish` no longer uses nested backslash
-quoting; validate with `fish -n scripts/install-worker.fish` and install with
-`fish scripts/install-worker.fish`. It manages only
-`website-auditor-worker.service`. See
-[`docs/LERD_WORKER_AND_PERFORMANCE.md`](docs/LERD_WORKER_AND_PERFORMANCE.md).
+The local/staging browser-faithful Livewire option permits page-initiated component requests which **may have side effects**. Enable only for explicitly authorized disposable test environments. Use verified TLS on production sites, rate limits and minimal scan concurrency. Profiles remain isolated.
 
-## Authenticated scanning upgrade (October 26, 2026)
+Reports open with **All websites / All scans** selected by default. Use optional Website, Scan, UTC date, result and unique HTTP-code filters; download matching HTML, CSV, JSON or XLSX diagnostics without selecting an individual scan. A specific scan also offers its original immutable report. Historical page observations are never changed by report filtering.
 
-See [Authenticated Scans](docs/AUTHENTICATED_SCANS.md). Login profiles now establish and verify a Playwright session before crawling. The post-login landing or explicit private start URL seeds route discovery; protected navigation groups can be expanded safely. Scan/route/error records show their associated profile. Run `npm run test:auth:browser` to exercise the dedicated local authenticated fixture without involving a real application.
+Reports support HTML, JSON, CSV and dependency-free native XLSX for page diagnostics, failed-page evidence, and Manual Review history (up to 10,000 records per workbook). For developer troubleshooting, **Developer evidence ZIP** provides a mapping between up to 100 selected page diagnostics and their available rendered/original HTML (inert text), network/console JSON, and optional screenshots. The ZIP requires dashboard authorization and is bounded to 25 MB by default. Filtering down to 100 pages or fewer is required; an explicit error explains oversized scopes. Screenshot evidence and even redacted HTML can contain private information: inspect before sharing. PDF rendering and full interactive-browser regression automation still require further implementation and verification. Evidence remains access-controlled and is not bundled in unrestricted JSON reports. The host manager must be authorized before enabling `AUDITOR_WORKER_CONTROL=systemd`.
+
+Agent coding rules: [AGENTS.md](AGENTS.md). Historical verification reports remain as original files under [`docs/history/`](docs/history/); earlier non-verification release notes are consolidated in [the historical release archive](docs/history/RELEASE_ARCHIVE_20261026-27.md).
+
+## Portable encrypted Website + Profile configuration backup
+
+Under **Websites → Configuration backup**, choose **Export** to download a _single_ versioned encrypted JSON file containing the selected websites (or all websites when none are selected), scan settings, login URLs, account identifiers, profile selectors, and passwords. The entire configuration is encrypted on the server using AES-256-GCM with a random IV, scrypt-derived key, and random salt. A distinct **backup password of at least 12 characters** is required; it is **not saved**, and the export cannot be restored without it. Store the encrypted file and password in separate secure locations. Profiles with archived status are included.
+
+Choose **Import**, provide the encrypted JSON and its password, and select one strategy:
+
+- **Skip duplicates (default):** Existing website URLs and their profiles remain unchanged; new websites are created.
+- **Update existing:** Existing websites are matched by normalized base URL and profiles by normalized name within their website. Existing MongoDB IDs, scan results, findings and RustFS evidence stay intact. Website/profile settings and encrypted login passwords are updated.
+- **Create new only:** Import only previously unknown website URLs. Existing URLs are explicit conflicts, not duplicated.
+
+The **Preview** operation is read-only: it checks the archive, decrypts it in server memory, and lists intended create/update/skip actions without revealing login names or passwords. Review the changes, then **Confirm import** within five minutes. Import confirmations are single-use, and applying requires the same encrypted file, password and strategy. Configuration import never writes scan history, issue history, stored reports or RustFS objects. Imported profiles are re-encrypted using this Website Auditor installation's `AUTH_ENCRYPTION_KEY`.
+
+Backups are compatible with the supported password-login profiles; other authentication methods are not invented or silently translated. The API supports at most 50 websites, 100 profiles per website and 2 MB of decrypted configuration data per backup. Invalid, malformed, tampered, or oversized files are rejected. Imports are _not_ intended to act as a live scan: new configuration is saved without starting a Playwright worker. Follow the normal authorized scan workflow afterwards.
+
+**Operational caution:** The current standalone MongoDB deployment may not support cross-collection transactions. If an import fails partway through, the endpoint reports applied counts; inspect the existing configuration and run a fresh Preview before attempting a follow-up import. It will never roll back or delete historical scans automatically. Before updating existing passwords in bulk, export and store a fresh encrypted backup.
+
+The endpoints are authenticated same-origin POST operations: `/api/config-backup/export`, `/api/config-backup/preview`, and `/api/config-backup/apply`. Never send backup passwords in URLs, issue reports, or CI logs.
+
+## Recent 2026-10-27 continuation: batch accuracy and privacy
+
+- **Active Errors** is the default `/api/issues` view and excludes Manual Review and independently verified resolutions. `/api/issues?status=all` explicitly includes historical statuses. The sidebar counts come from MongoDB, not a partial page list.
+- **Batch scan totals** are grouped server-side by `batchId`: queued, running, paused, completed, failed, cancelled and measured page counts. The Scan History table loads a recent result window, and expanding a batch can fetch additional jobs in pages of 100. The recent-batch menu counts cover the latest 200 batch groups, not the entire lifetime of the database. Individual scan records, logs and evidence are unchanged.
+- **Diagnostic exports** redact query secrets inside the nested performance/resource waterfall, in addition to outer URLs and error text. Do not treat unrestricted exports as access-controlled screenshot backups.
+- **Updater activation** now returns a failure or blocker if an enabled systemd user unit cannot be restarted or the application's HTTPS readiness check fails. The quality gate includes dependency-free Python updater/deployment checks before lint, tests, typecheck and build. Restart validation does not alter MongoDB or RustFS.
+- This release is **not live-verified** without a successful installation of npm dependencies and an authorized Lerd/MongoDB/RustFS environment. See the dated verification report for open work.
+
+## Excel export compatibility
+
+The Reports and Manual Review panels provide XLSX downloads. Spreadsheets contain sanitized report fields and literal text cells only (never user-supplied Excel formulas). The XLSX output is ZIP/XML-based and does not bundle private screenshot objects. Narrow filters if the request exceeds 10,000 records. Individual cells over Excel's 32,767-character limit are visibly truncated with a reference to the complete JSON export. Do not use XLSX as a substitute for a complete private RustFS evidence backup.
+
+## October 28 interface and batch-accounting refinements
+
+- Overview shows five KPI cards in one row on wide screens. Performance graphs use `/api/analytics` (MongoDB totals for the selected seven- or 30-day period) rather than only the first dashboard result page; unavailable aggregation displays an explicitly labeled sampled fallback. All websites are selected by default, with per-website comparisons.
+- Scans moves **Start scan** to the right of its form row. Website Create/Edit now uses the shared scrollable Dialog with fixed actions; Escape/Cancel warns only for actual unsaved changes.
+- Reports downloads run through a scoped Blob download handler. Download failures appear alongside exports; intermittent 2.5-second background polling failures are a separate nonfatal status, not false export failures. The `Developer evidence ZIP` includes a `manifest.json` and page mapping, and never modifies stored RustFS objects.
+- Batch retries distinguish **selected**, **new jobs**, **reused active**, **ineligible** and **failed** items. Selections are appended to a new `batch_requests` collection, independent of scan results; a selection can legitimately reuse an active job and therefore not produce a new scan record. Existing batches remain readable without this optional tracking data.
+- Historical implementation notes were consolidated into one archived Markdown file; historical verification reports remain in place. No MongoDB or RustFS cleanup is part of this source upgrade.
+- Full acceptance of React interactions, reports, worker health, MongoDB queries and on-host production build must run on the Lerd machine.
+
+### Worker command modes (local)
+
+- `npm run worker` opens a terminal-only numbered action menu (run/status/logs/start/stop/restart/diagnose).
+- `npm run worker:run` remains the **non-interactive queue worker** for systemd, service managers and unattended jobs.
+- The installed systemd unit may invoke `worker/index.ts` directly and remains compatible. Do not replace that command with the interactive menu.
+- Service stop/restart requires an explicit yes in the interactive menu.
+
+## Frontend architecture (local development)
+
+- `src/app/page.tsx` is Overview. `src/app/{websites,scans,routes,errors,resolved,manual-review,reports,settings,workers}/page.tsx` provide explicit protected workspace routes.
+- `src/app/<section>/_components/` holds section-specific UI such as Website cards, configuration backups, Manual Review and Reports. `src/app/_overview/` contains overview-only analytics.
+- `src/components/ui/` contains separately maintained ActionButton, IconButton, accessible Dialog/ConfirmDialog, Tooltip, Card, FormField, Tabs, StatusBadge/Alert, and DataTable. Import from `@/components/ui`.
+- `DataTable` takes an array of rows, a stable row key, and column headers/accessors/render functions; Routes, Active Errors, Resolved Findings, Reports, and Manual Review now share it. Supported columns sort their currently loaded rows with accessible buttons. For paginated reports, this is explicitly a **current-page sort** until server-side sort/filter is implemented. Action columns are not sortable.
+- Configuration export normalizes _legacy optional_ profile URL/selector fields that may be stored as `null` or blank; required passwords and authorized target URLs remain strictly validated. Original MongoDB records and RustFS evidence are not changed by serialization.
+- Browser acceptance is performed on the user's Lerd host: `npm run format:check && npm run lint && npm run test && npm run typecheck && npm run build`, followed by real profile export/import and Manual Review keyboard/viewport checks.
+
+### Route type generation after UI page migrations
+
+`npm run typecheck` regenerates Next.js route types after clearing only generated type folders. This prevents `.next/types/validator.ts` from importing removed route files such as `[[...section]]/page.tsx`. It does not remove the Next.js cache or database records. Run validation and build sequentially.
+
+### Shared UI actions and report sorting
+
+Website cards, profile archives, scan cancellation and retention cleanup use shared destructive button styles and their existing confirmation workflows. `DestructiveButton` defaults to a quiet outline on a card; only the final confirmation uses a solid danger style. The shared `DataTable` supports local sorting for loaded datasets and controlled server sorting for paginated datasets. The Reports page uses a whitelist of database-backed sort fields, while columns such as Actions and derived Issues remain intentionally nonsortable.
+
+### Findings grouped by detected issue
+
+In **Active Errors → Detected issue groups**, findings are grouped by normalized category and
+message (for example, `http: Main document HTTP 500`). Distinct HTTP response codes do not
+merge. Expand a group to inspect affected routes, or select the group to act on its existing
+finding IDs. No MongoDB findings, audit history, or RustFS evidence are consolidated or deleted.
+Grouping operates on the currently loaded and filtered findings, not an implicit database-wide
+count. Server-side active/resolved totals remain authoritative.
+
+Website-card Scan, Profiles, Edit, and Delete actions share a four-column equal-width row with no horizontal scrolling. On compact cards decorative icons are hidden to keep all four labeled actions visible. Buttons use shared hover, pressed, keyboard focus, and disabled visual states in both themes.
+
+The Overview uses separate full-width surfaces for worker status, Review and investigation navigation, the five KPI cards, and analytics. Page diagnostics uses the shared `SlideOver` built on `Dialog` instead of a separate fixed overlay; Escape, backdrop close, focus trapping, scroll locking, and focus return follow the same rules as centered dialogs. Unsaved-change prompts, configuration import approval, sign-out, and reviewed-patch application use custom `ConfirmDialog` controls instead of browser-native `confirm()`. On tablet and desktop drawer widths, resource search/type/order filters occupy one row; on narrow phones they stack to remain usable.

@@ -19,3 +19,11 @@ bun.lock
 bun.lockb
 # Lerd edits this file when linking; do not bounce its formatting on every format run.
 .lerd.yaml
+
+# Exclude installer backups, reports and private exported configurations.
+.auditor-fix-backups/
+.auditor-backups/
+.auditor-update-stage/
+storage/test-reports/
+storage/generated/
+*.encrypted.json

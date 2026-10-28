@@ -1,16 +1,32 @@
+import { countFindingSeverities } from '@/lib/finding-severity';
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID, createHash } from 'node:crypto';
 import { ObjectId } from 'mongodb';
 import type { Filter, UpdateFilter } from 'mongodb';
 import { z } from 'zod';
 import { database } from '@/lib/db';
 import { normalizeUrl, effectivePort, assertTargetAllowed, parseAllowedHosts } from '@/lib/scope';
 import { encrypt } from '@/lib/crypto';
+import { configBackupApi } from '@/lib/config-backup-api';
+import { profileNameKey } from '@/lib/profile-name';
 import { inspectSource, validatePatch, applyApprovedPatch } from '@/lib/fixes';
 import { assertApiAccess, setLoginCookie, clearLoginCookie, verifyPassword } from '@/lib/auth';
 import { enqueueScan } from '@/lib/queue';
 import { recordScanEvent } from '@/lib/telemetry';
 import { getEvidence, deleteScanEvidence } from '@/lib/storage';
 import { buildIssueExport } from '@/lib/error-export';
+import { reviewDecisions, reviewTransition } from '@/lib/review';
+import type { ReviewEvent } from '@/lib/review';
+import { buildReviewExport, buildReviewWorkbook } from '@/lib/review-export';
+import { buildDiagnosticExport, buildDiagnosticWorkbook } from '@/lib/diagnostic-export';
+import { buildEvidenceBundle } from '@/lib/evidence-bundle';
+import { distinctHttpStatuses, reportPageFilter } from '@/lib/report-filter';
+import { reportSort } from '@/lib/report-sort';
+import { batchSummaryPipeline } from '@/lib/batch-summary';
+import { aggregateAnalytics } from '@/lib/analytics-query';
+import { recordBatchAttempts, countBatchAttempts, type BatchAttempt } from '@/lib/batch-attempts';
+import { issueListFilter } from '@/lib/issue-list-filter';
+import { workerControlEnabled, workerService } from '@/lib/worker-control';
 import { cleanupRequest, makeCleanupToken, performCleanup, previewCleanup } from '@/lib/cleanup';
 import type { Site, Scan, AuthProfile, PageResult, Issue } from '@/lib/types';
 
@@ -86,15 +102,43 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
       clearLoginCookie(result);
       return result;
     }
+    const actor = `administrator-session:${createHash('sha256')
+      .update(request.cookies.get('auditor_session')?.value || 'authenticated')
+      .digest('hex')
+      .slice(0, 12)}`;
     const db = await database();
+    if (endpoint === 'config-backup' && method === 'POST') {
+      return configBackupApi(db, request, route[1] || '');
+    }
     if (method === 'GET' && endpoint === 'summary') {
-      const [sites, scans, issues, recent] = await Promise.all([
+      const [sites, scans, activeScans, issues, resolved, manualReview, recent] = await Promise.all([
         db.collection('sites').countDocuments(),
         db.collection('scans').countDocuments(),
+        db.collection('scans').countDocuments({ status: { $in: ['queued', 'running', 'paused'] } }),
         db.collection('issues').countDocuments({ status: { $in: ['open', 'reopened'] } }),
+        db.collection('issues').countDocuments({ status: 'verified_resolved' }),
+        db.collection('issues').countDocuments({ status: 'manual_review' }),
         db.collection<Scan>('scans').find().sort({ createdAt: -1 }).limit(7).toArray(),
       ]);
-      return json({ sites, scans, issues, recent });
+      const activeFindingEvidence = await db
+        .collection<Issue>('issues')
+        .find(
+          { status: { $in: ['open', 'reopened'] } },
+          { projection: { category: 1, message: 1, latestHttpStatus: 1 } },
+        )
+        .toArray();
+      const severities = countFindingSeverities(activeFindingEvidence);
+      return json({
+        sites,
+        scans,
+        activeScans,
+        issues,
+        resolved,
+        manualReview,
+        errorIssues: severities.error,
+        warningIssues: severities.warning,
+        recent,
+      });
     }
     if (endpoint === 'sites') {
       if (method === 'GET')
@@ -193,15 +237,76 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
         const siteId = request.nextUrl.searchParams.get('siteId');
         const items = await db
           .collection<AuthProfile>('profiles')
-          .find(siteId ? { siteId } : {}, { projection: { encryptedPassword: 0 } })
+          .find(
+            {
+              ...(siteId ? { siteId } : {}),
+              archivedAt: { $exists: request.nextUrl.searchParams.get('archived') === '1' },
+            },
+            { projection: { encryptedPassword: 0 } },
+          )
           .toArray();
         return json(items);
+      }
+      if (method === 'DELETE' && route[1]) {
+        const current = await db.collection<AuthProfile>('profiles').findOne({ _id: id(route[1]) });
+        if (!current) return json({ error: 'Profile not found' }, 404);
+        if (current.archivedAt) return json({ error: 'Profile already archived' }, 409);
+        const body = z.object({ confirmName: z.string() }).parse(await request.json());
+        if (body.confirmName !== current.name)
+          return json({ error: 'Profile name confirmation does not match' }, 400);
+        const active = await db.collection<Scan>('scans').countDocuments({
+          authProfileId: current._id!.toString(),
+          status: { $in: ['queued', 'running', 'paused'] },
+        });
+        if (active)
+          return json({ error: 'Cancel associated active scans before archiving this profile' }, 409);
+        const changed = await db
+          .collection<AuthProfile>('profiles')
+          .updateOne(
+            { _id: current._id, archivedAt: { $exists: false } },
+            { $set: { archivedAt: new Date() }, $unset: { profileNameKey: '' } },
+          );
+        if (!changed.modifiedCount) return json({ error: 'Profile changed concurrently' }, 409);
+        return json({
+          ok: true,
+          archived: true,
+          notice: 'Profile archived; historical scans and encrypted credentials preserved',
+        });
+      }
+      if (method === 'POST' && route[1] === 'restore' && route[2]) {
+        const current = await db.collection<AuthProfile>('profiles').findOne({ _id: id(route[2]) });
+        if (!current || !current.archivedAt) return json({ error: 'Archived profile not found' }, 404);
+        const body = z.object({ confirmName: z.string() }).parse(await request.json());
+        if (body.confirmName !== current.name)
+          return json({ error: 'Profile name confirmation does not match' }, 400);
+        const existing = await db
+          .collection<AuthProfile>('profiles')
+          .find(
+            { siteId: current.siteId, archivedAt: { $exists: false } },
+            { projection: { name: 1, profileNameKey: 1 } },
+          )
+          .toArray();
+        if (
+          existing.some(
+            (profile) =>
+              (profile.profileNameKey || profileNameKey(profile.name)) === profileNameKey(current.name),
+          )
+        )
+          return json({ error: 'Another active profile has this name; rename it before restoring' }, 409);
+        const changed = await db
+          .collection<AuthProfile>('profiles')
+          .updateOne(
+            { _id: current._id, archivedAt: { $exists: true } },
+            { $set: { profileNameKey: profileNameKey(current.name) }, $unset: { archivedAt: '' } },
+          );
+        if (!changed.modifiedCount) return json({ error: 'Profile changed concurrently' }, 409);
+        return json({ ok: true, restored: true });
       }
       if (method === 'POST') {
         const fields = z
           .object({
             siteId: z.string(),
-            name: z.string().min(1),
+            name: z.string().trim().min(1).max(100),
             loginUrl: z.string(),
             startUrl: z.string().optional(),
             username: z.string().min(1),
@@ -218,9 +323,21 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
         await assertTargetAllowed(fields.loginUrl, site);
         if (fields.startUrl?.trim()) await assertTargetAllowed(fields.startUrl, site);
         if (fields.successUrl?.trim()) await assertTargetAllowed(fields.successUrl, site);
+        const existingNames = await db
+          .collection<AuthProfile>('profiles')
+          .find({ siteId: fields.siteId }, { projection: { name: 1, profileNameKey: 1 } })
+          .toArray();
+        if (
+          existingNames.some(
+            (existing) =>
+              (existing.profileNameKey || profileNameKey(existing.name)) === profileNameKey(fields.name),
+          )
+        )
+          return json({ error: 'A profile with this name already exists for the website' }, 409);
         const { password, ...safe } = fields;
         const item: AuthProfile = {
           ...safe,
+          profileNameKey: profileNameKey(fields.name),
           loginUrl: normalizeUrl(fields.loginUrl),
           startUrl: fields.startUrl?.trim() ? normalizeUrl(fields.startUrl) : undefined,
           successUrl: fields.successUrl?.trim() ? normalizeUrl(fields.successUrl) : undefined,
@@ -232,7 +349,7 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
       }
       if (method === 'PATCH' && route[1]) {
         const current = await db.collection<AuthProfile>('profiles').findOne({ _id: id(route[1]) });
-        if (!current) throw Error('Authentication profile not found');
+        if (!current || current.archivedAt) throw Error('Authentication profile missing or archived');
         const fields = z
           .object({
             name: z.string().trim().min(1).max(100),
@@ -252,9 +369,24 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
         await assertTargetAllowed(fields.loginUrl, site);
         if (fields.startUrl?.trim()) await assertTargetAllowed(fields.startUrl, site);
         if (fields.successUrl?.trim()) await assertTargetAllowed(fields.successUrl, site);
+        const existingNames = await db
+          .collection<AuthProfile>('profiles')
+          .find(
+            { siteId: current.siteId, _id: { $ne: current._id } },
+            { projection: { name: 1, profileNameKey: 1 } },
+          )
+          .toArray();
+        if (
+          existingNames.some(
+            (existing) =>
+              (existing.profileNameKey || profileNameKey(existing.name)) === profileNameKey(fields.name),
+          )
+        )
+          return json({ error: 'A profile with this name already exists for the website' }, 409);
         const { password, ...safe } = fields;
         const update = {
           ...safe,
+          profileNameKey: profileNameKey(fields.name),
           loginUrl: normalizeUrl(fields.loginUrl),
           startUrl: fields.startUrl?.trim() ? normalizeUrl(fields.startUrl) : undefined,
           successUrl: fields.successUrl?.trim() ? normalizeUrl(fields.successUrl) : undefined,
@@ -264,38 +396,121 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
         return json({ ok: true });
       }
     }
+    if (endpoint === 'analytics' && method === 'GET') {
+      const params = request.nextUrl.searchParams;
+      const rawDays = params.get('days') || '7';
+      if (!['7', '30'].includes(rawDays)) return json({ error: 'Invalid analytics period' }, 400);
+      const siteId = params.get('siteId') || undefined;
+      if (siteId) id(siteId);
+      return json(await aggregateAnalytics(db, new Date(), Number(rawDays), siteId));
+    }
     if (endpoint === 'scans') {
       if (method === 'GET') {
-        if (route[1] === 'pages' && route[2]) {
+        if (route[1] === 'batch' && route[2]) {
+          const batchId = id(route[2]).toString();
+          const rawSkip = Number(request.nextUrl.searchParams.get('skip') || '0');
+          if (!Number.isSafeInteger(rawSkip) || rawSkip < 0 || rawSkip > 100000)
+            return json({ error: 'Invalid batch page offset' }, 400);
+          const filter = { batchId };
+          const [items, total] = await Promise.all([
+            db
+              .collection<Scan>('scans')
+              .find(filter)
+              .sort({ createdAt: -1, _id: -1 })
+              .skip(rawSkip)
+              .limit(100)
+              .toArray(),
+            db.collection<Scan>('scans').countDocuments(filter),
+          ]);
+          return json({
+            items,
+            total,
+            nextSkip: rawSkip + items.length < total ? rawSkip + items.length : null,
+          });
+        }
+        if (route[1] === 'batches') {
+          const siteId = request.nextUrl.searchParams.get('siteId') || undefined;
+          if (siteId) id(siteId);
+          const batches = await db
+            .collection<Scan>('scans')
+            .aggregate(batchSummaryPipeline(siteId))
+            .toArray();
+          if (!batches.length) return json([]);
+          const attemptGroups = await db
+            .collection('batch_requests')
+            .aggregate([
+              { $match: { batchId: { $in: batches.map((batch) => batch._id) } } },
+              {
+                $group: {
+                  _id: '$batchId',
+                  selected: { $sum: 1 },
+                  newJobs: { $sum: { $cond: [{ $eq: ['$outcome', 'queued'] }, 1, 0] } },
+                  reused: { $sum: { $cond: [{ $eq: ['$outcome', 'reused'] }, 1, 0] } },
+                  ineligible: { $sum: { $cond: [{ $eq: ['$outcome', 'ineligible'] }, 1, 0] } },
+                  rejected: { $sum: { $cond: [{ $eq: ['$outcome', 'failed'] }, 1, 0] } },
+                },
+              },
+            ])
+            .toArray();
+          const byBatch = new Map(attemptGroups.map((result) => [String(result._id), result]));
+          return json(
+            batches.map((batch) => ({ ...batch, attemptCounts: byBatch.get(String(batch._id)) || null })),
+          );
+        }
+        if (route[1] === 'http-statuses') {
+          const params = new URLSearchParams(request.nextUrl.searchParams);
+          params.delete('http'); // Available codes must not disappear after a code is chosen.
+          const siteId = params.get('siteId');
+          const scanId = params.get('scanId');
+          if (siteId) id(siteId);
+          if (scanId) id(scanId);
+          let filter: Filter<PageResult>;
+          try {
+            filter = reportPageFilter(params);
+          } catch (e) {
+            return json({ error: e instanceof Error ? e.message : 'Invalid filters' }, 400);
+          }
+          const values = await db.collection<PageResult>('pages').distinct('status', filter);
+          return json({ statuses: distinctHttpStatuses(values) });
+        }
+        if (route[1] === 'pages') {
           const query = request.nextUrl.searchParams;
-          if (query.get('paged') !== '1')
+          const forcedScan = route[2];
+          if (forcedScan) id(forcedScan);
+          const siteId = query.get('siteId');
+          const scanId = forcedScan || query.get('scanId');
+          if (siteId) id(siteId);
+          if (scanId) id(scanId);
+          if (query.get('paged') !== '1') {
+            if (!forcedScan) return json({ error: 'Choose a scan for unpaged legacy results' }, 400);
             return json(
               await db
                 .collection<PageResult>('pages')
-                .find({ scanId: route[2] })
+                .find({ scanId: forcedScan })
                 .sort({ capturedAt: -1 })
                 .limit(2000)
                 .toArray(),
             );
+          }
+          let filter: Filter<PageResult>;
+          try {
+            filter = reportPageFilter(query, forcedScan);
+          } catch (e) {
+            return json({ error: e instanceof Error ? e.message : 'Invalid filters' }, 400);
+          }
+          let ordering: ReturnType<typeof reportSort>;
+          try {
+            ordering = reportSort(query);
+          } catch (e) {
+            return json({ error: e instanceof Error ? e.message : 'Invalid sorting' }, 400);
+          }
           const limit = Math.min(100, Math.max(1, Number(query.get('limit') || 30) || 30));
           const page = Math.max(0, Math.min(10000, Number(query.get('page') || 0) || 0));
-          const classification = query.get('result');
-          const http = query.get('http');
-          const raw = (query.get('q') || '').trim().slice(0, 160);
-          const filter: Filter<PageResult> = { scanId: route[2] };
-          if (classification && ['passed', 'warning', 'failed'].includes(classification))
-            filter.classification = classification as PageResult['classification'];
-          if (http && /^\d{3}$/.test(http)) filter.status = Number(http);
-          if (raw)
-            filter.$or = [
-              { url: { $regex: raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
-              { title: { $regex: raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
-            ];
           const [items, total] = await Promise.all([
             db
               .collection<PageResult>('pages')
               .find(filter)
-              .sort({ capturedAt: -1 })
+              .sort(ordering)
               .skip(page * limit)
               .limit(limit)
               .toArray(),
@@ -324,6 +539,183 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
           options,
         );
         return json(result, result.existing ? 200 : 201);
+      }
+      if (method === 'POST' && route[1] === 'rerun') {
+        const prior = await db.collection<Scan>('scans').findOne({ _id: id(String(route[2] || '')) });
+        if (!prior) return json({ error: 'Original scan not found' }, 404);
+        if (['queued', 'running', 'paused'].includes(prior.status))
+          return json({ error: 'Finish or cancel the active scan before rerunning it' }, 409);
+        const body = z
+          .object({
+            options: z
+              .object({
+                maxPages: z.number().int().min(0).max(10000).optional(),
+                maxDepth: z.number().int().min(0).max(10).optional(),
+                concurrency: z.number().int().min(1).max(6).optional(),
+                timeoutMs: z.number().int().min(3000).max(120000).optional(),
+              })
+              .optional(),
+          })
+          .parse(await request.json());
+        const result = await enqueueScan(
+          prior.siteId,
+          prior.authProfileId,
+          prior.urls,
+          { ...(prior.options || {}), ...(body.options || {}) },
+          prior.mode,
+          prior._id!.toString(),
+        );
+        return json({ ...result, rerunOfScanId: prior._id!.toString() }, result.existing ? 200 : 201);
+      }
+      if (method === 'POST' && route[1] === 'retry-bulk') {
+        const body = z
+          .object({
+            issueIds: z.array(z.string()).max(50).optional(),
+            pageIds: z.array(z.string()).max(50).optional(),
+            allEligible: z.boolean().optional(),
+            siteId: z.string().optional(),
+            scanId: z.string().optional(),
+            cursor: z.string().optional(),
+            batchId: z.string().optional(),
+          })
+          .refine(
+            (v) => v.issueIds?.length || v.pageIds?.length || (v.allEligible && (v.siteId || v.scanId)),
+            'Select findings or provide a website/scan scope',
+          )
+          .parse(await request.json());
+        if (body.siteId) id(body.siteId);
+        if (body.scanId) id(body.scanId);
+        // Caller reuses this ID across paginated retry submissions. The original
+        // scan records remain immutable and existing active jobs are deduplicated.
+        const batchId = body.batchId ? id(body.batchId).toString() : new ObjectId().toString();
+        const now = new Date();
+        let outcomes: BatchAttempt[];
+        if (body.pageIds?.length) {
+          if (new Set(body.pageIds).size !== body.pageIds.length)
+            return json({ error: 'Duplicate page selection' }, 400);
+          const targets = await db
+            .collection<PageResult>('pages')
+            .find({
+              _id: { $in: body.pageIds.map(id) },
+              classification: 'failed',
+              ...(body.siteId ? { siteId: body.siteId } : {}),
+              ...(body.scanId ? { scanId: body.scanId } : {}),
+            })
+            .limit(50)
+            .toArray();
+          const lookup = new Map(targets.map((item) => [item._id!.toString(), item]));
+          outcomes = [];
+          for (const pageId of body.pageIds) {
+            const target = lookup.get(pageId);
+            const row: BatchAttempt = {
+              batchId,
+              source: 'page',
+              sourceId: pageId,
+              outcome: 'ineligible',
+              createdAt: now,
+            };
+            if (!target)
+              row.reason = 'Page does not exist, no longer failed, or outside the selected scan scope';
+            else
+              try {
+                const queued = await enqueueScan(
+                  target.siteId,
+                  target.authProfileId,
+                  [target.url],
+                  undefined,
+                  'retry',
+                  undefined,
+                  batchId,
+                );
+                row.scanId = queued.scanId;
+                row.outcome = queued.existing ? 'reused' : 'queued';
+                if (queued.existing) row.reason = 'Identical verification was already active';
+              } catch (e) {
+                row.outcome = 'failed';
+                row.reason = e instanceof Error ? e.message : 'Cannot retry this page';
+              }
+            outcomes.push(row);
+          }
+        } else {
+          const where: Filter<Issue> = { status: { $in: ['open', 'reopened'] } };
+          if (body.siteId) where.siteId = body.siteId;
+          if (body.scanId) where.scanId = body.scanId;
+          if (body.allEligible) {
+            if (body.cursor) where._id = { $gt: id(body.cursor) };
+          } else {
+            if (new Set(body.issueIds || []).size !== (body.issueIds || []).length)
+              return json({ error: 'Duplicate finding selection' }, 400);
+            where._id = { $in: (body.issueIds || []).map(id) };
+          }
+          const candidates = await db
+            .collection<Issue>('issues')
+            .find(where)
+            .sort(body.allEligible ? { _id: 1 } : { lastDetectedAt: -1 })
+            .limit(50)
+            .toArray();
+          const requested = body.allEligible
+            ? candidates.map((item) => item._id!.toString())
+            : body.issueIds || [];
+          const lookup = new Map(candidates.map((item) => [item._id!.toString(), item]));
+          outcomes = [];
+          for (const issueId of requested) {
+            const finding = lookup.get(issueId);
+            const row: BatchAttempt = {
+              batchId,
+              source: 'issue',
+              sourceId: issueId,
+              outcome: 'ineligible',
+              createdAt: now,
+            };
+            if (!finding)
+              row.reason = 'Finding is resolved, under Manual Review, missing, or outside selection scope';
+            else
+              try {
+                const queued = await enqueueScan(
+                  finding.siteId,
+                  finding.authProfileId,
+                  [finding.url],
+                  undefined,
+                  'retry',
+                  undefined,
+                  batchId,
+                );
+                row.scanId = queued.scanId;
+                row.outcome = queued.existing ? 'reused' : 'queued';
+                if (queued.existing) row.reason = 'Identical verification was already active';
+              } catch (e) {
+                row.outcome = 'failed';
+                row.reason = e instanceof Error ? e.message : 'Cannot retry this finding';
+              }
+            outcomes.push(row);
+          }
+        }
+        const counts = countBatchAttempts(outcomes);
+        let trackingWarning: string | undefined;
+        try {
+          await recordBatchAttempts(db, outcomes);
+        } catch {
+          trackingWarning =
+            'Verification jobs were processed, but saving batch selection history failed. Check database connectivity.';
+        }
+        const allEligibleNext = body.allEligible && outcomes.length === 50;
+        return json({
+          batchId,
+          selected: counts.selected,
+          eligible: counts.selected - counts.ineligible,
+          queued: counts.newJobs,
+          alreadyActive: counts.reused,
+          ineligible: counts.ineligible,
+          failed: counts.failed,
+          trackingWarning,
+          nextCursor: allEligibleNext ? outcomes.at(-1)?.sourceId || null : null,
+          results: outcomes.map(({ sourceId, outcome, scanId, reason }) => ({
+            sourceId,
+            outcome,
+            scanId,
+            reason,
+          })),
+        });
       }
       if (method === 'POST' && route[1] === 'retry') {
         const body = await request.json();
@@ -406,6 +798,34 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
         return json({ ok: true, ...(await performCleanup(body.token)) });
       }
     }
+    if (endpoint === 'worker-service') {
+      if (method === 'GET') {
+        const type = request.nextUrl.searchParams.get('view') === 'logs' ? 'logs' : 'status';
+        try {
+          return json({ enabled: workerControlEnabled(), output: await workerService(type) });
+        } catch (e) {
+          return json({
+            enabled: workerControlEnabled(),
+            error: e instanceof Error ? e.message : 'Supervisor unavailable',
+          });
+        }
+      }
+      if (method === 'POST') {
+        const body = z
+          .object({
+            action: z.enum(['start', 'stop', 'restart']),
+            confirm: z.literal('WEBSITE AUDITOR WORKER'),
+          })
+          .parse(await request.json());
+        if (!workerControlEnabled())
+          return json(
+            { error: 'Host worker control is disabled; read-only monitoring remains available' },
+            403,
+          );
+        // Deliberately fixed service name and argv. No caller-controlled executable, flags or unit.
+        return json({ ok: true, output: await workerService(body.action) });
+      }
+    }
     if (endpoint === 'workers' && method === 'GET') {
       const records = await db.collection('workers').find().sort({ heartbeatAt: -1 }).limit(20).toArray();
       const now = Date.now();
@@ -435,21 +855,115 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
       return json({ current, previous });
     }
     if (endpoint === 'pages' && method === 'GET') {
+      if (route[1]) {
+        const historical = await db.collection<PageResult>('pages').findOne({ _id: id(route[1]) });
+        return historical ? json(historical) : json({ error: 'Historical page evidence not found' }, 404);
+      }
       return json(
         await db.collection<PageResult>('pages').find().sort({ capturedAt: -1 }).limit(500).toArray(),
       );
     }
     if (endpoint === 'issues') {
-      if (method === 'GET')
+      if (method === 'GET') {
+        const q = request.nextUrl.searchParams;
+        const siteId = q.get('siteId');
+        const status = q.get('status');
+        if (siteId) id(siteId);
+        const filter: Filter<Issue> = issueListFilter(status, siteId);
         return json(
-          await db.collection<Issue>('issues').find().sort({ lastDetectedAt: -1 }).limit(500).toArray(),
+          await db
+            .collection<Issue>('issues')
+            .find(filter)
+            .sort({ lastDetectedAt: -1 })
+            .limit(2000)
+            .toArray(),
         );
+      }
+      if (method === 'POST' && route[1] === 'review') {
+        const body = z
+          .object({
+            issueIds: z.array(z.string()).min(1).max(50),
+            decision: z.enum(
+              reviewDecisions as [(typeof reviewDecisions)[number], ...(typeof reviewDecisions)[number][]],
+            ),
+            comment: z.string().max(2000).default(''),
+          })
+          .parse(await request.json());
+        const results: Array<{ issueId: string; ok: boolean; error?: string }> = [];
+        for (const issueId of [...new Set(body.issueIds)]) {
+          try {
+            const _id = id(issueId);
+            const collection = db.collection<Issue>('issues');
+            const finding = await collection.findOne({ _id });
+            if (!finding) throw Error('Finding not found');
+            const change = reviewTransition(finding, body.decision, body.comment);
+            const event: ReviewEvent = {
+              id: randomUUID(),
+              at: new Date(),
+              actor,
+              decision: body.decision,
+              from: finding.status,
+              to: change.status,
+              previousReviewState: finding.reviewState,
+              reviewState: change.reviewState,
+              comment: body.comment.trim(),
+            };
+            // Compare-and-swap prevents concurrent reviewers from overwriting a status transition.
+            const updated = await collection.updateOne(
+              {
+                _id,
+                status: finding.status,
+                ...(finding.reviewVersion === undefined
+                  ? { reviewVersion: { $exists: false } }
+                  : { reviewVersion: finding.reviewVersion }),
+              },
+              {
+                $set: { status: change.status, reviewState: change.reviewState },
+                $inc: { reviewVersion: 1 },
+                $push: { reviewHistory: event },
+              },
+            );
+            if (!updated.modifiedCount) throw Error('Finding changed concurrently; refresh to review');
+            results.push({ issueId, ok: true });
+          } catch (e) {
+            results.push({ issueId, ok: false, error: e instanceof Error ? e.message : 'Review failed' });
+          }
+        }
+        return json({
+          updated: results.filter((r) => r.ok).length,
+          failed: results.filter((r) => !r.ok).length,
+          results,
+        });
+      }
       if (method === 'PATCH' && route[1]) {
-        const body = await request.json();
-        if (body.status !== 'manual_review' && body.status !== 'open') throw Error('Invalid manual status');
-        await db
-          .collection<Issue>('issues')
-          .updateOne({ _id: id(route[1]) }, { $set: { status: body.status } });
+        // Backward-compatible interface; all mutations now require an auditable review event.
+        const body = z
+          .object({ status: z.enum(['manual_review', 'open']), comment: z.string().default('') })
+          .parse(await request.json());
+        const finding = await db.collection<Issue>('issues').findOne({ _id: id(route[1]) });
+        if (!finding) return json({ error: 'Finding not found' }, 404);
+        const decision = body.status === 'manual_review' ? 'submit' : 'return_active';
+        const change = reviewTransition(finding, decision, body.comment);
+        const event: ReviewEvent = {
+          id: randomUUID(),
+          at: new Date(),
+          actor,
+          decision,
+          from: finding.status,
+          to: change.status,
+          previousReviewState: finding.reviewState,
+          reviewState: change.reviewState,
+          comment: body.comment.trim(),
+        };
+        const updated = await db.collection<Issue>('issues').updateOne(
+          { _id: finding._id, status: finding.status },
+          {
+            $set: { status: change.status, reviewState: change.reviewState },
+            $inc: { reviewVersion: 1 },
+            $push: { reviewHistory: event },
+          },
+        );
+        if (!updated.modifiedCount) return json({ error: 'Finding changed; refresh and retry' }, 409);
         return json({ ok: true });
       }
     }
@@ -535,31 +1049,178 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
       });
       return new Response(new Uint8Array(evidence.bytes), { headers });
     }
+    if (endpoint === 'exports' && route[1] === 'diagnostics' && method === 'GET') {
+      const q = request.nextUrl.searchParams;
+      const siteId = q.get('siteId'),
+        scanId = q.get('scanId');
+      if (siteId) id(siteId);
+      if (scanId) {
+        const source = await db.collection<Scan>('scans').findOne({ _id: id(scanId) });
+        if (!source || (siteId && source.siteId !== siteId))
+          return json({ error: 'Invalid scan scope' }, 400);
+      }
+      const format =
+        q.get('format') === 'xlsx'
+          ? 'xlsx'
+          : q.get('format') === 'html'
+            ? 'html'
+            : q.get('format') === 'csv'
+              ? 'csv'
+              : 'json';
+      let filter: Filter<PageResult>;
+      try {
+        filter = reportPageFilter(q);
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : 'Invalid filters' }, 400);
+      }
+      const collection = db.collection<PageResult>('pages');
+      const total = await collection.countDocuments(filter);
+      if (total > 10000)
+        return json({ error: 'Export exceeds 10,000 pages. Narrow the date or website filters.' }, 413);
+      const records = await collection.find(filter).sort({ capturedAt: -1 }).limit(10000).toArray();
+      return new Response(
+        format === 'xlsx'
+          ? new Uint8Array(buildDiagnosticWorkbook(records))
+          : buildDiagnosticExport(records, format),
+        {
+          headers: {
+            'Content-Type':
+              format === 'xlsx'
+                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                : format === 'html'
+                  ? 'text/html; charset=utf-8'
+                  : format === 'csv'
+                    ? 'text/csv; charset=utf-8'
+                    : 'application/json; charset=utf-8',
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            'Content-Disposition': `attachment; filename="website-auditor-diagnostics.${format}"`,
+          },
+        },
+      );
+    }
+    if (endpoint === 'exports' && route[1] === 'evidence-bundle' && method === 'GET') {
+      const params = request.nextUrl.searchParams;
+      const siteId = params.get('siteId');
+      const scanId = params.get('scanId');
+      if (siteId) id(siteId);
+      if (scanId) id(scanId);
+      const includeScreenshots = params.get('screenshots') === '1';
+      if (params.get('screenshots') && !['0', '1'].includes(params.get('screenshots')!))
+        return json({ error: 'Invalid screenshot option' }, 400);
+      let filter: Filter<PageResult>;
+      try {
+        filter = reportPageFilter(params);
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : 'Invalid filters' }, 400);
+      }
+      const collection = db.collection<PageResult>('pages');
+      const count = await collection.countDocuments(filter);
+      if (!count) return json({ error: 'No matching saved page evidence to export' }, 404);
+      if (count > 100)
+        return json(
+          { error: `Evidence bundle includes ${count} pages; narrow filters to 100 pages or fewer.` },
+          413,
+        );
+      const items = await collection.find(filter).sort({ capturedAt: -1 }).limit(100).toArray();
+      const archive = await buildEvidenceBundle(items, getEvidence, { includeScreenshots });
+      return new Response(new Uint8Array(archive), {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': 'attachment; filename="website-auditor-evidence.zip"',
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
+    if (endpoint === 'exports' && route[1] === 'reviews' && method === 'GET') {
+      const q = request.nextUrl.searchParams;
+      const format =
+        q.get('format') === 'xlsx'
+          ? 'xlsx'
+          : q.get('format') === 'html'
+            ? 'html'
+            : q.get('format') === 'csv'
+              ? 'csv'
+              : 'json';
+      const filter: Filter<Issue> = {
+        $or: [{ status: 'manual_review' }, { reviewHistory: { $exists: true } }],
+      };
+      const siteId = q.get('siteId');
+      if (siteId) {
+        id(siteId);
+        filter.siteId = siteId;
+      }
+      const reviewCollection = db.collection<Issue>('issues');
+      if ((await reviewCollection.countDocuments(filter)) > 10000)
+        return json({ error: 'Export exceeds 10,000 findings. Narrow the website filters.' }, 413);
+      const findings = await reviewCollection
+        .find(filter)
+        .sort({ lastDetectedAt: -1 })
+        .limit(10000)
+        .toArray();
+      return new Response(
+        format === 'xlsx'
+          ? new Uint8Array(buildReviewWorkbook(findings))
+          : buildReviewExport(findings, format),
+        {
+          headers: {
+            'Content-Type':
+              format === 'xlsx'
+                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                : format === 'html'
+                  ? 'text/html; charset=utf-8'
+                  : format === 'csv'
+                    ? 'text/csv; charset=utf-8'
+                    : 'application/json; charset=utf-8',
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            'Content-Disposition': `attachment; filename="website-auditor-manual-reviews.${format}"`,
+          },
+        },
+      );
+    }
     if (endpoint === 'exports' && route[1] === 'errors' && method === 'GET') {
       const q = request.nextUrl.searchParams;
       const siteId = q.get('siteId') || undefined;
       const scanId = q.get('scanId') || undefined;
-      const format = q.get('format') === 'json' ? 'json' : 'csv';
+      const format = q.get('format') === 'xlsx' ? 'xlsx' : q.get('format') === 'json' ? 'json' : 'csv';
       if (siteId) id(siteId);
       if (scanId) id(scanId);
-      if (!siteId && !scanId) return json({ error: 'Choose a website or scan for bulk error export' }, 400);
       if (scanId) {
         const scan = await db.collection<Scan>('scans').findOne({ _id: id(scanId) });
         if (!scan || (siteId && scan.siteId !== siteId)) return json({ error: 'Invalid scan scope' }, 400);
       }
-      const filter: Filter<PageResult> = { classification: 'failed' };
-      if (siteId) filter.siteId = siteId;
-      if (scanId) filter.scanId = scanId;
-      const pages = await db
-        .collection<PageResult>('pages')
-        .find(filter)
-        .sort({ capturedAt: -1 })
-        .limit(20000)
-        .toArray();
-      const data = buildIssueExport(pages, format);
+      let filter: Filter<PageResult>;
+      const errorQuery = new URLSearchParams(q);
+      errorQuery.set('result', 'failed');
+      try {
+        filter = reportPageFilter(errorQuery);
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : 'Invalid filters' }, 400);
+      }
+      const collection = db.collection<PageResult>('pages');
+      const total = await collection.countDocuments(filter);
+      if (total > (format === 'xlsx' ? 10000 : 20000))
+        return json(
+          {
+            error: `Export exceeds ${format === 'xlsx' ? '10,000' : '20,000'} failed pages. Narrow your filters.`,
+          },
+          413,
+        );
+      const pages = await collection.find(filter).sort({ capturedAt: -1 }).limit(20000).toArray();
+      const data =
+        format === 'xlsx' ? new Uint8Array(buildDiagnosticWorkbook(pages)) : buildIssueExport(pages, format);
       return new Response(data, {
         headers: {
-          'Content-Type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8',
+          'Content-Type':
+            format === 'xlsx'
+              ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+              : format === 'csv'
+                ? 'text/csv; charset=utf-8'
+                : 'application/json; charset=utf-8',
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
           'Content-Disposition': `attachment; filename="website-auditor-errors.${format}"`,

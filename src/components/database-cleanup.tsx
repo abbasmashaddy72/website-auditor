@@ -1,6 +1,7 @@
 'use client';
+import { ActionButton, DestructiveButton } from './ui';
 import { useState } from 'react';
-import { AlertTriangle, Database, ShieldCheck, Trash2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Database, ShieldCheck, RefreshCw } from 'lucide-react';
 
 type Site = { _id: string; name: string };
 type Mode = 'scans' | 'resolved_issues' | 'events' | 'workers';
@@ -129,9 +130,9 @@ export default function DatabaseCleanup({ sites, onClean }: { sites: Site[]; onC
           </select>
         </label>
       </div>
-      <button className="btn" disabled={busy || days < 1 || days > 3650} onClick={() => void plan()}>
+      <ActionButton disabled={busy || days < 1 || days > 3650} onClick={() => void plan()}>
         <RefreshCw size={14} /> Preview cleanup (no deletion)
-      </button>
+      </ActionButton>
       {preview && (
         <div className="space-y-3 rounded-xl border border-amber-500/40 p-4">
           <div className="flex items-center gap-2 text-sm">
@@ -157,13 +158,13 @@ export default function DatabaseCleanup({ sites, onClean }: { sites: Site[]; onC
                   onChange={(e) => setAck(e.target.value)}
                 />
               </label>
-              <button
-                className="btn danger"
+              <DestructiveButton
+                emphasis="strong"
                 disabled={busy || ack !== 'DELETE AUDITOR HISTORY'}
                 onClick={() => void clean()}
               >
-                <Trash2 size={14} /> Permanently delete eligible data
-              </button>
+                Permanently delete eligible data
+              </DestructiveButton>
             </>
           )}
         </div>

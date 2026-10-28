@@ -1,6 +1,7 @@
 import { database } from './db';
 import { createHash } from 'node:crypto';
 import type { Issue, PageResult } from './types';
+import { activeFindingsForVerification, canVerifyResolution, verifiedSnapshot } from './resolution';
 function fingerprint(url: string, category: string, message: string): string {
   return createHash('sha256')
     .update([url, category, message.slice(0, 160)].join('|'))
@@ -8,31 +9,25 @@ function fingerprint(url: string, category: string, message: string): string {
 }
 export async function recordPageIssues(page: PageResult): Promise<void> {
   const db = await database();
-  if (page.issues.length === 0 && page.classification === 'passed') {
+  if (canVerifyResolution(page)) {
     // Resolve only issues for the exact route and authentication profile; never for unvisited pages.
-    await db.collection<Issue>('issues').updateMany(
-      {
-        siteId: page.siteId,
-        authProfileId: page.authProfileId || { $exists: false },
-        url: page.url,
-        status: { $in: ['open', 'reopened'] },
+    await db.collection<Issue>('issues').updateMany(activeFindingsForVerification(page), {
+      $set: {
+        status: 'verified_resolved',
+        lastVerifiedAt: page.capturedAt,
+        latestHttpStatus: page.status,
+        lastResolution: verifiedSnapshot(page),
       },
-      {
-        $set: {
-          status: 'verified_resolved',
-          lastVerifiedAt: page.capturedAt,
-          latestHttpStatus: page.status,
-        },
-        $push: {
-          history: {
-            at: page.capturedAt,
-            scanId: page.scanId,
-            status: page.status,
-            classification: 'passed',
-          },
+      $push: {
+        history: {
+          at: page.capturedAt,
+          scanId: page.scanId,
+          pageId: page._id!.toString(),
+          status: page.status,
+          classification: 'passed',
         },
       },
-    );
+    });
     return;
   }
   if (page.issues.length === 0) return; // warnings do not verify an earlier failure as resolved
@@ -41,6 +36,7 @@ export async function recordPageIssues(page: PageResult): Promise<void> {
       collection = db.collection<Issue>('issues');
     const where = { siteId: page.siteId, authProfileId: page.authProfileId, fingerprint: fp };
     const old = await collection.findOne(where);
+    if (old?.lastDetectedAt && old.lastDetectedAt.getTime() > page.capturedAt.getTime()) continue;
     await collection.updateOne(
       where,
       {
@@ -64,19 +60,18 @@ export async function recordPageIssues(page: PageResult): Promise<void> {
           category: item.category,
           message: item.message,
           firstDetectedAt: page.capturedAt,
+          firstScanId: page.scanId,
+          firstPageId: page._id!.toString(),
         },
         $inc: { occurrences: 1 },
         $push: {
+          // Append without truncation. Historical failures must remain available for comparison.
           history: {
-            $each: [
-              {
-                at: page.capturedAt,
-                scanId: page.scanId,
-                status: page.status,
-                classification: page.classification,
-              },
-            ],
-            $slice: -30,
+            at: page.capturedAt,
+            scanId: page.scanId,
+            pageId: page._id!.toString(),
+            status: page.status,
+            classification: page.classification,
           },
         },
       },

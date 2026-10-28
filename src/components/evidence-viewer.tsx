@@ -1,8 +1,9 @@
 'use client';
 import { useState } from 'react';
 import Image from 'next/image';
-import { Download, ZoomIn, ZoomOut, Maximize2, X, Search } from 'lucide-react';
+import { Download, ZoomIn, ZoomOut, Maximize2, Search } from 'lucide-react';
 import PerformancePanel from './performance-panel';
+import { ActionButton, IconButton, Dialog, TabBar } from './ui';
 import type { PageTiming } from '../lib/performance';
 
 type EvidencePage = {
@@ -66,8 +67,11 @@ export default function EvidenceViewer({ page, renderedHtml }: { page: EvidenceP
   ];
   return (
     <section className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Page evidence">
-        {tabs
+      <TabBar
+        label="Page evidence"
+        value={tab}
+        onChange={(next) => void changeTab(next as EvidenceTab)}
+        tabs={tabs
           .filter(
             ([id]) =>
               id === 'performance' ||
@@ -77,19 +81,8 @@ export default function EvidenceViewer({ page, renderedHtml }: { page: EvidenceP
               (id === 'network' && !!keys.network) ||
               (id === 'console' && !!keys.console),
           )
-          .map(([id, label]) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === id}
-              key={id}
-              onClick={() => void changeTab(id)}
-              className={`btn ${tab === id ? 'primary' : ''}`}
-            >
-              {label}
-            </button>
-          ))}
-      </div>
+          .map(([value, label]) => ({ value, label }))}
+      />
       {error && (
         <p className="text-sm text-red-600" role="alert">
           {error}
@@ -101,18 +94,16 @@ export default function EvidenceViewer({ page, renderedHtml }: { page: EvidenceP
       {tab === 'screenshot' && keys.screenshot && (
         <div className="surface space-y-3 p-3">
           <div className="flex flex-wrap items-center gap-2">
-            <button className="btn" onClick={() => setZoom((v) => Math.max(0.25, v - 0.25))}>
+            <ActionButton onClick={() => setZoom((v) => Math.max(0.25, v - 0.25))}>
               <ZoomOut size={14} /> Smaller
-            </button>
-            <button className="btn" onClick={() => setZoom(1)}>
-              100%
-            </button>
-            <button className="btn" onClick={() => setZoom((v) => Math.min(3, v + 0.25))}>
+            </ActionButton>
+            <ActionButton onClick={() => setZoom(1)}>100%</ActionButton>
+            <ActionButton onClick={() => setZoom((v) => Math.min(3, v + 0.25))}>
               <ZoomIn size={14} /> Larger
-            </button>
-            <button className="btn" onClick={() => setFull(true)}>
+            </ActionButton>
+            <ActionButton onClick={() => setFull(true)}>
               <Maximize2 size={14} /> Fullscreen viewer
-            </button>
+            </ActionButton>
             <a className="btn" href={evidencePath(keys.screenshot) + '&download=1'}>
               <Download size={14} /> PNG
             </a>
@@ -142,9 +133,9 @@ export default function EvidenceViewer({ page, renderedHtml }: { page: EvidenceP
                 onChange={(e) => setQuery(e.target.value)}
               />
             </div>
-            <button className="btn" onClick={() => setSource((v) => !v)}>
+            <ActionButton onClick={() => setSource((v) => !v)}>
               {source ? 'Sandboxed preview' : 'View source'}
-            </button>
+            </ActionButton>
             <a
               className="btn"
               href={evidencePath(tab === 'original' ? keys.original : keys.rendered) + '&download=1'}
@@ -182,35 +173,40 @@ export default function EvidenceViewer({ page, renderedHtml }: { page: EvidenceP
           {consoleData || 'No saved console diagnostics.'}
         </pre>
       )}
-      {full && keys.screenshot && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Full screenshot viewer"
-          className="fixed inset-0 z-[100] overflow-auto bg-black/90 p-4"
-        >
-          <div className="sticky top-0 z-10 mb-3 flex justify-end gap-2">
-            <button className="btn" onClick={() => setZoom((v) => Math.max(0.25, v - 0.25))}>
-              <ZoomOut size={14} />
-            </button>
-            <button className="btn" onClick={() => setZoom((v) => Math.min(3, v + 0.25))}>
-              <ZoomIn size={14} />
-            </button>
-            <button className="btn" onClick={() => setFull(false)}>
-              <X size={18} /> Close
-            </button>
+      <Dialog
+        open={full && !!keys.screenshot}
+        title="Full screenshot viewer"
+        size="fullscreen"
+        onClose={() => setFull(false)}
+      >
+        {keys.screenshot && (
+          <div className="space-y-3">
+            <div className="sticky top-0 z-10 flex flex-wrap items-center justify-end gap-2 bg-[var(--surface)] py-2">
+              <IconButton
+                tooltip="Zoom out screenshot"
+                onClick={() => setZoom((v) => Math.max(0.25, v - 0.25))}
+              >
+                <ZoomOut size={14} />
+              </IconButton>
+              <IconButton tooltip="Zoom in screenshot" onClick={() => setZoom((v) => Math.min(3, v + 0.25))}>
+                <ZoomIn size={14} />
+              </IconButton>
+              <ActionButton onClick={() => setZoom(1)}>Reset to 100%</ActionButton>
+            </div>
+            <div className="max-h-[calc(100dvh-12rem)] overflow-auto rounded-lg bg-slate-900/10 p-2">
+              <Image
+                unoptimized
+                width={1440}
+                height={900}
+                alt="Full-size captured screenshot"
+                src={evidencePath(keys.screenshot)}
+                className="mx-auto h-auto max-w-none"
+                style={{ width: `${Math.round(1100 * zoom)}px` }}
+              />
+            </div>
           </div>
-          <Image
-            unoptimized
-            width={1440}
-            height={900}
-            alt="Full-size captured screenshot"
-            src={evidencePath(keys.screenshot)}
-            className="mx-auto h-auto max-w-none"
-            style={{ width: `${Math.round(1100 * zoom)}px` }}
-          />
-        </div>
-      )}
+        )}
+      </Dialog>
     </section>
   );
 }

@@ -1,3 +1,4 @@
+import { redactText, redactUrl } from './redact';
 /** Page timings are observational. Values are milliseconds and may be absent in older scans. */
 export interface ResourceTiming {
   url: string;
@@ -78,4 +79,16 @@ export function slowestResources(resources: ResourceTiming[], limit = 10): Resou
     .filter((r) => r.durationMs >= 0)
     .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, limit);
+}
+
+/** Strip secrets from nested request timing objects before unrestricted exports. */
+export function publicPerformance(timing: PageTiming): PageTiming {
+  return {
+    ...timing,
+    resources: (timing.resources || []).map((entry) => ({
+      ...entry,
+      url: redactUrl(entry.url),
+      ...(entry.failure ? { failure: redactText(entry.failure) } : {}),
+    })),
+  };
 }

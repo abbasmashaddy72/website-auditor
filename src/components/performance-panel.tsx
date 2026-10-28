@@ -84,10 +84,13 @@ export default function PerformancePanel({ performance: timing, fallbackDuration
           <h3 className="section-h">Slowest requests ({res.length} recorded)</h3>
           <span className="muted text-xs">Top: {slowestResources(res, 1)[0]?.type || '—'}</span>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div
+          className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(110px,140px)_minmax(125px,150px)]"
+          aria-label="Request filters"
+        >
           <input
             aria-label="Search resource URL"
-            className="input min-w-40 flex-1"
+            className="input min-w-0"
             placeholder="Search resource URLs"
             value={query}
             onChange={(e) => setQuery(e.target.value)}

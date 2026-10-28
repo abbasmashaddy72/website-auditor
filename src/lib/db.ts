@@ -16,6 +16,13 @@ export async function ensureIndexes(): Promise<void> {
   await Promise.all([
     db.collection('sites').createIndex({ baseUrl: 1 }, { unique: true }),
     db.collection('profiles').createIndex({ siteId: 1 }),
+    db
+      .collection('profiles')
+      .createIndex(
+        { siteId: 1, profileNameKey: 1 },
+        { unique: true, partialFilterExpression: { profileNameKey: { $type: 'string' } } },
+      ),
+    db.collection('issues').createIndex({ status: 1, lastDetectedAt: -1 }),
     db.collection('scans').createIndex({ status: 1, leaseUntil: 1, createdAt: 1 }),
     db
       .collection('scans')
@@ -27,6 +34,9 @@ export async function ensureIndexes(): Promise<void> {
     db.collection('scan_events').createIndex({ at: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 14 }),
     db.collection('workers').createIndex({ heartbeatAt: 1 }),
     db.collection('pages').createIndex({ scanId: 1, url: 1 }, { unique: true }),
+    db.collection('pages').createIndex({ capturedAt: -1, _id: -1 }),
+    db.collection('pages').createIndex({ siteId: 1, capturedAt: -1 }),
+    db.collection('pages').createIndex({ status: 1, capturedAt: -1 }),
     db.collection('issues').createIndex({ siteId: 1, authProfileId: 1, fingerprint: 1 }, { unique: true }),
   ]);
 }

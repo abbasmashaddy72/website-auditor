@@ -7,14 +7,14 @@
     "node": ">=22 <25"
   },
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 3100",
+    "dev": "next dev -H 0.0.0.0 -p 3100",
     "prod": "next start -H 0.0.0.0 -p 3100",
     "start": "next start -H 0.0.0.0 -p 3100",
-    "worker": "tsx worker/index.ts",
-    "dev:all": "concurrently -k 'npm run dev' 'npm run worker'",
+    "worker": "node scripts/worker-menu.mjs",
+    "dev:all": "concurrently -k 'npm run dev' 'npm run worker:run'",
     "build": "next build",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node scripts/refresh-next-types.mjs && next typegen && tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "scan": "tsx cli/index.ts scan",
     "scan:status": "tsx cli/index.ts status",
@@ -27,11 +27,16 @@
     "format:check": "prettier --check .",
     "format:files": "prettier --write",
     "lint:fix": "eslint . --fix",
-    "quality:check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "quality:check": "bash scripts/verify.sh",
     "worker:status": "fish scripts/worker-status.fish",
     "worker:install": "fish scripts/auditor.fish install",
     "worker:manage": "fish scripts/auditor.fish",
-    "test:auth:browser": "node --import tsx tests/auth-browser.mjs"
+    "test:auth:browser": "node --import tsx tests/auth-browser.mjs",
+    "data:check": "tsx scripts/check-integrity.ts",
+    "verify": "bash scripts/verify.sh",
+    "worker:run": "tsx worker/index.ts",
+    "cleanup:check": "python3 scripts/cleanup.py --check",
+    "cleanup": "python3 scripts/cleanup.py --apply"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.900.0",

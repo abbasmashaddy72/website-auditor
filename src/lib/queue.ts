@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ObjectId, MongoServerError } from 'mongodb';
 import { database } from './db';
 import { recordScanEvent } from './telemetry';
+import { assertTargetAllowed, isCrawlablePageUrl, isSafeLink } from './scope';
 import type { Scan, Site } from './types';
 
 const activeStatuses: Scan['status'][] = ['queued', 'running', 'paused'];
@@ -38,6 +39,8 @@ export async function enqueueScan(
   urls?: string[],
   options?: Scan['options'],
   mode?: Scan['mode'],
+  rerunOfScanId?: string,
+  batchId?: string,
 ): Promise<{ scanId: string; existing: boolean }> {
   const db = await database();
   ensureQueueIndex ??= db
@@ -54,11 +57,19 @@ export async function enqueueScan(
   if (!ObjectId.isValid(siteId)) throw Error('Invalid site identifier');
   const site = await db.collection<Site>('sites').findOne({ _id: new ObjectId(siteId) });
   if (!site) throw Error('Unknown website');
+  if (urls) {
+    for (const url of urls) {
+      if (!isCrawlablePageUrl(url) || !isSafeLink(url))
+        throw Error('Explicit retry/import URL is not a safe browser page');
+      await assertTargetAllowed(url, site);
+    }
+  }
   let authProfileName: string | undefined;
   if (authProfileId) {
     if (!ObjectId.isValid(authProfileId)) throw Error('Invalid authentication profile');
     const profile = await db.collection('profiles').findOne({ _id: new ObjectId(authProfileId), siteId });
-    if (!profile) throw Error('Authentication profile does not belong to website');
+    if (!profile || profile.archivedAt)
+      throw Error('Authentication profile is missing, archived, or does not belong to website');
     authProfileName = String(profile.name || 'Authenticated');
   }
   const activeKey = scanKey(siteId, authProfileId, urls, options, mode);
@@ -81,6 +92,8 @@ export async function enqueueScan(
     siteId,
     authProfileId,
     authProfileName,
+    rerunOfScanId,
+    batchId,
     mode: mode || (urls ? 'retry' : 'crawl'),
     urls,
     options,
