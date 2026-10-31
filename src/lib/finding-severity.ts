@@ -11,6 +11,9 @@ export function findingSeverity(
 ): 'error' | 'warning' {
   const category = item.category.toLowerCase();
   const code = item.latestHttpStatus;
+  if (category === 'authentication-expected' && (code === 401 || code === 403)) return 'warning';
+  // A recorded failure cannot be erased by an inconsistent later HTTP 200 field.
+  if (/\b(?:HTTP|status)\s*5\d\d\b/i.test(item.message)) return 'error';
   if (code !== undefined && code >= 500) return 'error';
   if (
     ['javascript', 'framework', 'network', 'security', 'interaction', 'server', 'authentication'].includes(
@@ -25,7 +28,20 @@ export function findingSeverity(
   }
   if (category === 'console')
     return /error|failed|uncaught|exception|404|500/i.test(item.message || '') ? 'error' : 'warning';
-  if (['warning', 'performance', 'accessibility', 'seo', 'informational'].includes(category))
+  if (
+    [
+      'warning',
+      'performance',
+      'accessibility',
+      'seo',
+      'informational',
+      'best-practice',
+      'best_practice',
+      'content',
+      'assets',
+      'ui',
+    ].includes(category)
+  )
     return 'warning';
   // Unknown categories are not silently downgraded.
   return 'error';

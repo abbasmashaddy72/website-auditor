@@ -1,3 +1,4 @@
+import { classifyPageEvidence } from './page-classification';
 import type { PageResult } from './types';
 
 export function normalizeBrowserError(error: unknown): string {
@@ -21,6 +22,8 @@ export function gradePageWithPolicy(
   issues: PageResult['issues'],
   warnings: string[],
   blockedUrls: Iterable<string>,
+  httpStatus?: number,
+  expectedAuthentication = false,
 ): { issues: PageResult['issues']; warnings: string[]; classification: PageResult['classification'] } {
   const livewireBlocked = [...blockedUrls].some((url) =>
     /\/livewire(?:-[a-z\d]+)?\/(?:update|message)/i.test(url),
@@ -29,7 +32,7 @@ export function gradePageWithPolicy(
     return {
       issues,
       warnings,
-      classification: issues.length ? 'failed' : warnings.length ? 'warning' : 'passed',
+      classification: classifyPageEvidence({ status: httpStatus, issues, warnings, expectedAuthentication }),
     };
   const kept: PageResult['issues'] = [];
   let uncertain = false;
@@ -48,5 +51,14 @@ export function gradePageWithPolicy(
     notes.push(
       'Inconclusive: scanner blocked a Livewire update while a runtime/error banner appeared. Recheck without blocking required framework requests in an explicitly authorized isolated test environment.',
     );
-  return { issues: kept, warnings: [...new Set(notes)], classification: kept.length ? 'failed' : 'warning' };
+  return {
+    issues: kept,
+    warnings: [...new Set(notes)],
+    classification: classifyPageEvidence({
+      status: httpStatus,
+      issues: kept,
+      warnings: [...new Set(notes)],
+      expectedAuthentication,
+    }),
+  };
 }

@@ -93,10 +93,10 @@ Use shared ActionButton/IconButton, Tooltip, DataTable, Card and Dialog for new 
 Every actionable element requires pointer and focus states; do not make noninteractive cards
 appear clickable. Test hover, active, disabled, mobile overflow and keyboard navigation locally.
 
-## Shared overlay and responsive controls
+## Page classification, status tabs and historical migration
 
-- For a right-hand diagnostics drawer use the exported `SlideOver` from `@/components/ui`. It shares the same underlying `Dialog` focus trap, Escape handling, body scroll lock, backdrop rules and focus restoration. Never create an unmanaged `fixed inset-0` overlay.
-- Do not call `window.confirm()` or the global `confirm()` for application actions. Use `ConfirmDialog` for explicit approvals and let `Dialog` handle unsaved-change confirmation internally, including Escape and backdrop dismissal.
-- Keep Overview worker status, review links, KPI cards and analytics in **separate full-width sections**. Do not place KPIs or trends inside a flex-wrapped review toolbar.
-- Website card buttons must occupy four equally sized cells in a single row without horizontal scrolling. Hide decorative button icons inside narrow cards, not the visible text labels.
-- In the diagnostics slide-over, keep request search, type and sort controls on one row when there is space; stack only at small viewport widths.
+- Use `src/lib/page-classification.ts` for grading new and historical page observations. A successful HTTP status is not proof a page passed; genuine JS, framework, network and authorization failures remain Failed. Only recognized non-fatal categories with 2xx may become Warning. Treat ambiguous evidence conservatively.
+- Route status tabs use the `/api/routes` collection-wide count/query implementation, not the 500-record dashboard page cache. Resolved only contains linked, verified page evidence, and may overlap Successful.
+- Warning-only page events must create durable findings in `issues` so dashboard, sidebar and review counts share the same source of truth. `GET /api/issues/counts` is authoritative for filtered active severity/group counts.
+- Run `npm run data:classification:preview` first. The migration is not automatic; `npm run data:classification:apply` requires operator approval, existing MongoDB backup, and before/after `npm run data:check`. Preserve all IDs, evidence objects and original report snapshots. Never regrade ambiguous 2xx findings based on status alone.
+- Verify new classification and count queries with focused tests; execute the full npm quality gate and local headed-browser check before marking these changes fully verified.

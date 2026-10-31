@@ -13,6 +13,8 @@ test('HTTP 200 does not downgrade functional JavaScript failure', () =>
 test('HTTP 500 is always an error and nonfatal audit findings remain warnings', () => {
   assert.equal(findingSeverity(row('accessibility', 500)), 'error');
   assert.equal(findingSeverity(row('performance', 200)), 'warning');
+  assert.equal(findingSeverity(row('assets', 200, '1 broken image detected')), 'warning');
+  assert.equal(findingSeverity(row('ui', 200, 'Horizontal viewport overflow')), 'warning');
   assert.equal(findingSeverity(row('http', 404)), 'error');
 });
 test('similar findings group without dropping original issue identifiers', () => {

@@ -36,6 +36,7 @@ export async function ensureIndexes(): Promise<void> {
     db.collection('pages').createIndex({ scanId: 1, url: 1 }, { unique: true }),
     db.collection('pages').createIndex({ capturedAt: -1, _id: -1 }),
     db.collection('pages').createIndex({ siteId: 1, capturedAt: -1 }),
+    db.collection('pages').createIndex({ siteId: 1, authProfileId: 1, classification: 1, capturedAt: -1 }),
     db.collection('pages').createIndex({ status: 1, capturedAt: -1 }),
     db.collection('issues').createIndex({ siteId: 1, authProfileId: 1, fingerprint: 1 }, { unique: true }),
   ]);

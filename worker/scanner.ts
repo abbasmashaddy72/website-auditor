@@ -12,8 +12,18 @@ import { recordPageIssues } from '../src/lib/issues';
 import { updateProgress } from '../src/lib/queue';
 import { recordScanEvent } from '../src/lib/telemetry';
 import { decrypt } from '../src/lib/crypto';
-import { classifyBrowserDiagnostics } from '../src/lib/diagnostics';
+import {
+  classifyBrowserDiagnostics,
+  isCriticalSubrequest,
+  isCorrelatedResourceConsole,
+  nonFatalBrowserWarnings,
+} from '../src/lib/diagnostics';
 import { gradePageWithPolicy, normalizeBrowserError } from '../src/lib/scan-grade';
+import { classifyPageEvidence } from '../src/lib/page-classification';
+import { discoverActionMenus, uniqueDiscoveredUrls, safeDiscoveredUrl } from '../src/lib/action-discovery';
+import { expectedAuthenticationChallenge } from '../src/lib/http-context';
+import { summarizeScanProgress } from '../src/lib/scan-progress';
+import { discoverReadOnlyPagination } from '../src/lib/pagination-discovery';
 import {
   chooseAuthenticatedSeed,
   isAuthenticatedDiscoveryCandidate,
@@ -38,6 +48,7 @@ export async function configureContext(
   allowedBrowserLivewire?: Set<string>,
   scannedPageUrl?: string,
   blockReasons?: Map<string, string>,
+  discoveryState?: { active: boolean },
 ): Promise<void> {
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -61,6 +72,9 @@ export async function configureContext(
         // Frame unavailable for early requests or service-worker activity.
       }
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        // Discovery never authorizes a user-defined Livewire mutation, even in opt-in mode.
+        if (discoveryState?.active && !isReadOnlyLivewireHydration(url, method, request.postData()))
+          throw Error(`Interactive discovery blocked mutation: ${method} ${new URL(url).pathname}`);
         if (authPhase) {
           if (method !== 'POST' || !loginUrl || !isApprovedLoginMutation(url, loginUrl, approvedLoginActions))
             throw Error(`Unapproved authentication mutation: ${method} ${new URL(url).pathname}`);
@@ -262,7 +276,7 @@ export async function loginAndState(
   return (await loginAndSession(browser, site, profile)).storageState;
 }
 
-/** Passive DOM-link discovery: do not click controls (even sidebar toggles can invoke Livewire actions). */
+/** Collect passive links; interactive inspection uses a separate strictly bounded step. */
 export async function discoverNavigationLinks(
   page: import('playwright').Page,
   mode: 'navigation' | 'all-links' = 'navigation',
@@ -281,6 +295,11 @@ export async function discoverNavigationLinks(
           '.fi-topbar a[href]',
           '[data-sidebar] a[href]',
           '[data-navigation] a[href]',
+          '.fi-ta-table a[href]',
+          '.fi-ta-header-toolbar a[href]',
+          '.fi-pagination a[href]',
+          '[aria-label*="pagination" i] a[href]',
+          'a[rel="next"]',
         ].join(', ');
   return page
     .locator(selector)
@@ -315,6 +334,7 @@ export async function scanPage(
     consoleErrors: string[] = [],
     failedRequests: PageResult['failedRequests'] = [],
     issues: PageResult['issues'] = [];
+  const discoveryState = { active: false };
   const policyBlocked = new Set<string>(),
     policyBlockReasons = new Map<string, string>(),
     allowedPassiveLivewire = new Set<string>(),
@@ -338,6 +358,7 @@ export async function scanPage(
     allowedBrowserLivewire,
     url,
     policyBlockReasons,
+    discoveryState,
   );
   await context.addInitScript(() => {
     try {
@@ -411,7 +432,7 @@ export async function scanPage(
   });
   page.on('response', (r) => {
     if (r.status() >= 400 && r.request().resourceType() !== 'document')
-      failedRequests.push({ url: r.url(), method: r.request().method(), status: r.status() });
+      failedRequests.push({ url: redactUrl(r.url()), method: r.request().method(), status: r.status() });
   });
   let status: number | undefined,
     initialStatus: number | undefined,
@@ -420,6 +441,8 @@ export async function scanPage(
     original = '',
     rendered = '',
     links: string[] = [],
+    discoveredInteractions: PageResult['discoveredInteractions'] = [],
+    expectedAuthentication = false,
     redirectChain: PageResult['redirects'] = [];
   let response: Response | null = null;
   const performance: PageTiming = { resources };
@@ -479,8 +502,23 @@ export async function scanPage(
     initialStatus = chain[0]?.status ?? status;
     original = (await response?.text().catch(() => '')) || '';
     rendered = await page.content();
+    // A challenged public visitor may be correctly denied access. Do not mask 404/5xx or
+    // authentication failures for scans that explicitly logged in.
+    const responseText = await page
+      .locator('body')
+      .innerText({ timeout: 3000 })
+      .catch(() => '');
+    expectedAuthentication = expectedAuthenticationChallenge(
+      status,
+      Boolean(scan.authProfileId),
+      response?.headers()['www-authenticate'] || null,
+      responseText,
+    );
     if (!status || status >= 400)
-      issues.push({ category: 'http', message: `Main document HTTP ${status || 'no response'}` });
+      issues.push({
+        category: expectedAuthentication ? 'authentication-expected' : 'http',
+        message: `Main document HTTP ${status || 'no response'}${expectedAuthentication ? ' (expected unauthenticated challenge)' : ''}`,
+      });
     if (loginUrl) {
       const passwordVisible = await page
         .locator('input[type="password"]')
@@ -490,10 +528,7 @@ export async function scanPage(
       if (looksLikeUnauthenticatedPage(finalUrl, loginUrl, passwordVisible, url))
         issues.push({ category: 'authentication', message: 'Session expired or redirect to login form' });
     }
-    const visibleText = await page
-      .locator('body')
-      .innerText({ timeout: 3000 })
-      .catch(() => '');
+    const visibleText = responseText;
     if (
       /this feature is temporarily unavailable|please wait a moment and try again/i.test(
         visibleText.slice(0, 2000),
@@ -503,7 +538,7 @@ export async function scanPage(
         category: 'framework',
         message: 'Visible temporary-unavailable error displayed despite HTTP success',
       });
-    if (visibleText.trim().length < 12)
+    if (visibleText.trim().length < 12 && !expectedAuthentication)
       issues.push({ category: 'render', message: 'Blank or nearly blank page body' });
     if (
       /(?:Whoops!|exception occurred|Server Error|Internal Server Error|Application error: a client-side exception)/i.test(
@@ -520,7 +555,20 @@ export async function scanPage(
       .evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 10)
       .catch(() => false);
     if (bodyOverflow) issues.push({ category: 'ui', message: 'Horizontal viewport overflow' });
-    links = await discoverNavigationLinks(page, site.discoveryMode || 'navigation');
+    links = uniqueDiscoveredUrls(
+      [
+        ...(await discoverNavigationLinks(page, site.discoveryMode || 'navigation')),
+        ...(scan.mode === 'crawl' ? await discoverReadOnlyPagination(page) : []),
+      ],
+      url,
+    );
+    if (scan.mode === 'crawl' && status && status < 400) {
+      discoveryState.active = true;
+      const discovered = await discoverActionMenus(page, links);
+      links = uniqueDiscoveredUrls(discovered.links, url);
+      discoveredInteractions = discovered.interactions;
+      // Remain in read-only mode through teardown to block delayed click handlers.
+    }
     const metrics = await page
       .evaluate(() => {
         const nav = window.performance.getEntriesByType('navigation')[0] as
@@ -587,7 +635,11 @@ export async function scanPage(
     new Set([...policyBlocked].map(redactUrl)),
   );
   for (const m of diagnostics.actionableConsole
-    .filter((m) => /hydration|uncaught|error|failed/i.test(m))
+    .filter(
+      (m) =>
+        /hydration|uncaught|error|failed/i.test(m) &&
+        !isCorrelatedResourceConsole(m, diagnostics.actionableRequests),
+    )
     .slice(0, 15))
     issues.push({ category: 'console', message: m });
   for (const r of diagnostics.actionableRequests
@@ -597,11 +649,7 @@ export async function scanPage(
         r.failure,
     )
     .slice(0, 20)) {
-    const critical =
-      [401, 403, 419, 422].includes(r.status || 0) ||
-      (r.status || 0) >= 500 ||
-      /\.(?:js|css)(?:\?|$)/i.test(r.url) ||
-      /livewire|_next|api\//i.test(r.url);
+    const critical = isCriticalSubrequest(r);
     // Chromium may abort an in-flight stylesheet during navigation/context teardown.
     // Keep it in the network evidence and as a warning, not a confirmed site failure.
     const navigationAbort = /\bERR_ABORTED\b/i.test(r.failure || '') && !r.status;
@@ -639,7 +687,12 @@ export async function scanPage(
       () =>
         'Livewire background request blocked by safe crawl policy. For an authorized local/staging site, review the optional Livewire compatibility setting.',
     );
-  const warnings = [...new Set(policyWarnings)];
+  const warnings = [
+    ...new Set([
+      ...policyWarnings,
+      ...nonFatalBrowserWarnings(diagnostics.actionableConsole, diagnostics.actionableRequests),
+    ]),
+  ];
   if (performance.settleTimedOut)
     warnings.push(
       `Page readiness budget reached; ${pendingAtCapture} relevant request(s) remained in flight. Rendering may be incomplete.`,
@@ -660,7 +713,12 @@ export async function scanPage(
       url,
     );
   }
-  const preliminaryClassification = issues.length ? 'failed' : warning ? 'warning' : 'passed';
+  const preliminaryClassification = classifyPageEvidence({
+    status,
+    issues,
+    warnings,
+    expectedAuthentication,
+  });
   pageReadyMs = Date.now() - started;
   performance.pageReadyMs = pageReadyMs;
   await Promise.allSettled([...pendingResourceTasks]);
@@ -745,7 +803,7 @@ export async function scanPage(
     }
   }
   performance.captureAndStorageMs = Math.max(0, Date.now() - started - pageReadyMs);
-  const graded = gradePageWithPolicy(issues, warnings, policyBlocked);
+  const graded = gradePageWithPolicy(issues, warnings, policyBlocked, status, expectedAuthentication);
   if (graded.classification === 'warning' && preliminaryClassification === 'failed')
     await recordScanEvent(
       scan._id!.toString(),
@@ -770,7 +828,7 @@ export async function scanPage(
     title,
     durationMs: pageReadyMs,
     performance,
-    classification: graded.issues.length ? 'failed' : graded.classification,
+    classification: graded.classification,
     issues: graded.issues,
     warnings: graded.warnings,
     consoleErrors,
@@ -779,6 +837,8 @@ export async function scanPage(
     evidence,
     capturedAt: new Date(),
     discoveredLinks: links.slice(0, 1000),
+    discoveredInteractions,
+    expectedAuthentication,
   };
   if (site.captureTraces && !evidence.trace) await context.tracing.stop().catch(() => {});
   await context.close();
@@ -873,7 +933,12 @@ export async function executeScan(
       !profile ||
       scan.mode !== 'crawl' ||
       isAuthenticatedDiscoveryCandidate(url, authSeed, profile.loginUrl, site.baseUrl);
-    const queue = initial.map((url) => ({ url, depth: 0 }));
+    const queue = [
+      ...new Set(
+        initial.map((raw) => safeDiscoveredUrl(raw, raw)).filter((link): link is string => Boolean(link)),
+      ),
+    ].map((url) => ({ url, depth: 0 }));
+    const skipped = new Set<string>();
     const seen = new Set<string>(),
       existing = await db.collection<PageResult>('pages').find({ scanId: scan._id!.toString() }).toArray();
     for (const p of existing) seen.add(p.url);
@@ -932,16 +997,20 @@ export async function executeScan(
         try {
           await assertTargetAllowed(next.url, effectiveSite);
         } catch {
+          skipped.add(next.url);
           continue;
         }
-        if (!isSafeLink(next.url) || !isCrawlablePageUrl(next.url) || !eligibleForDiscovery(next.url))
+        if (!isSafeLink(next.url) || !isCrawlablePageUrl(next.url) || !eligibleForDiscovery(next.url)) {
+          skipped.add(next.url);
           continue;
+        }
         seen.add(next.url);
         batch.push(next);
       }
       if (!batch.length) break;
       await updateProgress(scan._id!, owner, {
-        discovered: seen.size + queue.length,
+        discovered: seen.size + queue.length + skipped.size,
+        skipped: skipped.size,
         currentUrl: batch[0].url,
       });
       await recordScanEvent(
@@ -1007,7 +1076,9 @@ export async function executeScan(
                 ) {
                   try {
                     await assertTargetAllowed(link, effectiveSite);
-                    queue.push({ url: link, depth: entry.depth + 1 });
+                    // Async scope checks can complete out of order; recheck queue before adding.
+                    if (!seen.has(link) && !queue.some((item) => item.url === link))
+                      queue.push({ url: link, depth: entry.depth + 1 });
                   } catch {
                     /* out of scope */
                   }
@@ -1053,11 +1124,7 @@ export async function executeScan(
       );
       const pages = await db.collection<PageResult>('pages').find({ scanId: scan._id!.toString() }).toArray();
       await updateProgress(scan._id!, owner, {
-        discovered: seen.size + queue.length,
-        visited: pages.length,
-        passed: pages.filter((p) => p.classification === 'passed').length,
-        failed: pages.filter((p) => p.classification === 'failed').length,
-        warnings: pages.filter((p) => p.classification === 'warning').length,
+        ...summarizeScanProgress(pages, seen.size + queue.length + skipped.size, skipped.size),
         currentUrl: batch.at(-1)?.url,
       });
     }
@@ -1074,6 +1141,11 @@ export async function executeScan(
       );
     }
     const pages = await db.collection<PageResult>('pages').find({ scanId: scan._id!.toString() }).toArray();
+    await updateProgress(
+      scan._id!,
+      owner,
+      summarizeScanProgress(pages, seen.size + queue.length + skipped.size, skipped.size),
+    );
     // Report persistence is awaited before the scan is marked completed.
     await recordScanEvent(
       scan._id!.toString(),

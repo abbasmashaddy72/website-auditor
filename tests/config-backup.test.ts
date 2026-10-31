@@ -121,7 +121,19 @@ test('signed preview expires and binds encrypted file and import strategy', asyn
   assert.equal(confirmImportPreview(token, fingerprint, now), true);
   assert.equal(confirmImportPreview(token, fingerprint + 'x', now), false);
   assert.equal(confirmImportPreview(token, fingerprint, now + 5 * 60_000 + 1), false);
-  assert.equal(confirmImportPreview(token.slice(0, -1) + 'x', fingerprint, now), false);
+  assert.equal(
+    confirmImportPreview(token.slice(0, -1) + (token.endsWith('x') ? 'y' : 'x'), fingerprint, now),
+    false,
+  );
+  const mac = token.slice(token.lastIndexOf('.') + 1);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const noncanonicalTail = [...alphabet].find(
+    (char) =>
+      char !== mac.at(-1) &&
+      Buffer.from(mac.slice(0, -1) + char, 'base64url').equals(Buffer.from(mac, 'base64url')),
+  );
+  assert.ok(noncanonicalTail, 'test must exercise a distinct noncanonical spelling of the same HMAC');
+  assert.equal(confirmImportPreview(token.slice(0, -1) + noncanonicalTail, fingerprint, now), false);
 });
 
 test('backup refuses duplicate websites, duplicated profiles, and out-of-scope login URL', () => {

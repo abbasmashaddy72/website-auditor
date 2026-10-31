@@ -31,6 +31,7 @@ test('only independently passed pages with actual success response can resolve f
     { classification: 'warning' as const },
     { classification: 'failed' as const },
     { issues: [{ category: 'javascript', message: 'Unexpected failure' }] },
+    { warnings: ['Unverified content warning'] },
     { status: 500 },
     { status: 302 },
     { _id: undefined },

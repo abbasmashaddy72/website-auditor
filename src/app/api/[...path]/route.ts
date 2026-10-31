@@ -1,4 +1,5 @@
-import { countFindingSeverities } from '@/lib/finding-severity';
+import { countFindingSeverities, groupActiveFindings } from '@/lib/finding-severity';
+import { routeBaseFilter, routeTabFilter, parseRouteTab, routeOrder } from '@/lib/routes-status';
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID, createHash } from 'node:crypto';
 import { ObjectId } from 'mongodb';
@@ -111,34 +112,91 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
       return configBackupApi(db, request, route[1] || '');
     }
     if (method === 'GET' && endpoint === 'summary') {
-      const [sites, scans, activeScans, issues, resolved, manualReview, recent] = await Promise.all([
-        db.collection('sites').countDocuments(),
-        db.collection('scans').countDocuments(),
-        db.collection('scans').countDocuments({ status: { $in: ['queued', 'running', 'paused'] } }),
-        db.collection('issues').countDocuments({ status: { $in: ['open', 'reopened'] } }),
-        db.collection('issues').countDocuments({ status: 'verified_resolved' }),
-        db.collection('issues').countDocuments({ status: 'manual_review' }),
-        db.collection<Scan>('scans').find().sort({ createdAt: -1 }).limit(7).toArray(),
-      ]);
-      const activeFindingEvidence = await db
-        .collection<Issue>('issues')
-        .find(
-          { status: { $in: ['open', 'reopened'] } },
-          { projection: { category: 1, message: 1, latestHttpStatus: 1 } },
-        )
-        .toArray();
+      const [sites, scans, activeScans, resolved, manualReview, recent, activeFindingEvidence] =
+        await Promise.all([
+          db.collection('sites').countDocuments(),
+          db.collection('scans').countDocuments(),
+          db.collection('scans').countDocuments({ status: { $in: ['queued', 'running', 'paused'] } }),
+          db.collection('issues').countDocuments({ status: 'verified_resolved' }),
+          db.collection('issues').countDocuments({ status: 'manual_review' }),
+          db.collection<Scan>('scans').find().sort({ createdAt: -1 }).limit(7).toArray(),
+          db
+            .collection<Issue>('issues')
+            .find(
+              { status: { $in: ['open', 'reopened'] } },
+              { projection: { category: 1, message: 1, latestHttpStatus: 1 } },
+            )
+            .toArray(),
+        ]);
       const severities = countFindingSeverities(activeFindingEvidence);
       return json({
         sites,
         scans,
         activeScans,
-        issues,
+        issues: activeFindingEvidence.length,
         resolved,
         manualReview,
         errorIssues: severities.error,
         warningIssues: severities.warning,
         recent,
       });
+    }
+    if (endpoint === 'routes' && method === 'GET') {
+      const params = request.nextUrl.searchParams;
+      const siteId = params.get('siteId');
+      const scanId = params.get('scanId');
+      if (siteId) id(siteId);
+      if (scanId) id(scanId);
+      const profile = params.get('profile');
+      if (profile && profile !== '*') id(profile);
+      const tab = parseRouteTab(params.get('status'));
+      const { field, direction } = routeOrder(params);
+      const rawPage = params.get('page') || '0';
+      if (!/^\d{1,5}$/.test(rawPage) || Number(rawPage) > 10000)
+        return json({ error: 'Invalid route page' }, 400);
+      const page = Number(rawPage);
+      const base = routeBaseFilter(params);
+      const resolvedQuery: Filter<Issue> = {
+        status: 'verified_resolved',
+        'lastResolution.pageId': { $type: 'string' },
+      };
+      if (siteId) resolvedQuery.siteId = siteId;
+      if (profile !== null && profile !== '*') {
+        if (profile) resolvedQuery.authProfileId = profile;
+        else
+          resolvedQuery.$and = [
+            {
+              $or: [
+                { authProfileId: { $exists: false } },
+                { authProfileId: '' },
+                { authProfileId: { $type: 'null' } },
+              ],
+            },
+          ];
+      }
+      const resolvedStrings = await db
+        .collection<Issue>('issues')
+        .distinct('lastResolution.pageId', resolvedQuery);
+      const resolvedIds = resolvedStrings
+        .filter((value): value is string => typeof value === 'string' && ObjectId.isValid(value))
+        .map((value) => new ObjectId(value));
+      const pages = db.collection<PageResult>('pages');
+      const [all, successful, warnings, failed, resolved] = await Promise.all([
+        pages.countDocuments(base),
+        pages.countDocuments(routeTabFilter(base, 'successful')),
+        pages.countDocuments(routeTabFilter(base, 'warnings')),
+        pages.countDocuments(routeTabFilter(base, 'failed')),
+        pages.countDocuments(routeTabFilter(base, 'resolved', resolvedIds)),
+      ]);
+      const counts = { all, successful, warnings, failed, resolved };
+      const filter = routeTabFilter(base, tab, resolvedIds);
+      const items = await pages
+        .find(filter)
+        .sort({ [field]: direction, _id: -1 })
+        .skip(page * 50)
+        .limit(50)
+        .toArray();
+      return json({ items, total: counts[tab], counts, page, limit: 50 });
     }
     if (endpoint === 'sites') {
       if (method === 'GET')
@@ -862,6 +920,54 @@ async function handle(request: NextRequest, method: 'GET' | 'POST' | 'PATCH' | '
       return json(
         await db.collection<PageResult>('pages').find().sort({ capturedAt: -1 }).limit(500).toArray(),
       );
+    }
+    if (endpoint === 'issues' && route[1] === 'counts' && method === 'GET') {
+      const params = request.nextUrl.searchParams;
+      const siteId = params.get('siteId');
+      const scanId = params.get('scanId');
+      const profile = params.get('profile');
+      if (siteId) id(siteId);
+      if (scanId) id(scanId);
+      if (profile && profile !== '*') id(profile);
+      const filter: Filter<Issue> = issueListFilter('active', siteId);
+      if (scanId) filter.scanId = scanId;
+      if (profile !== null && profile !== '*') {
+        if (profile) filter.authProfileId = profile;
+        else
+          filter.$and = [
+            {
+              $or: [
+                { authProfileId: { $exists: false } },
+                { authProfileId: '' },
+                { authProfileId: { $type: 'null' } },
+              ],
+            },
+          ];
+      }
+      const q = params.get('q')?.trim().slice(0, 160);
+      if (q) {
+        const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.$or = [
+          { url: { $regex: escaped, $options: 'i' } },
+          { category: { $regex: escaped, $options: 'i' } },
+          { message: { $regex: escaped, $options: 'i' } },
+        ];
+      }
+      const rows = await db
+        .collection<Issue>('issues')
+        .find(filter, { projection: { category: 1, message: 1, latestHttpStatus: 1, url: 1 } })
+        .toArray();
+      const severities = countFindingSeverities(rows);
+      const groups = groupActiveFindings(
+        rows.map((row) => ({
+          _id: row._id!.toString(),
+          category: row.category,
+          message: row.message,
+          latestHttpStatus: row.latestHttpStatus,
+          url: row.url,
+        })),
+      ).length;
+      return json({ all: rows.length, errors: severities.error, warnings: severities.warning, groups });
     }
     if (endpoint === 'issues') {
       if (method === 'GET') {

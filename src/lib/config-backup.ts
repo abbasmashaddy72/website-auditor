@@ -339,7 +339,11 @@ export function confirmImportPreview(token: string, fingerprint: string, now = D
   )
     return false;
   const payload = pieces.slice(0, 3).join('.');
-  const signature = Buffer.from(pieces[3], 'base64url'),
-    expected = hmac(payload);
+  // Node's base64url decoder accepts noncanonical trailing bits. Two distinct
+  // token strings can decode to the same MAC, so reject alternate encodings.
+  if (!/^[A-Za-z0-9_-]{43}$/.test(pieces[3])) return false;
+  const signature = Buffer.from(pieces[3], 'base64url');
+  if (signature.toString('base64url') !== pieces[3]) return false;
+  const expected = hmac(payload);
   return signature.length === expected.length && timingSafeEqual(signature, expected);
 }

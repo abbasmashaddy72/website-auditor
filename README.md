@@ -154,6 +154,41 @@ finding IDs. No MongoDB findings, audit history, or RustFS evidence are consolid
 Grouping operates on the currently loaded and filtered findings, not an implicit database-wide
 count. Server-side active/resolved totals remain authoritative.
 
-Website-card Scan, Profiles, Edit, and Delete actions share a four-column equal-width row with no horizontal scrolling. On compact cards decorative icons are hidden to keep all four labeled actions visible. Buttons use shared hover, pressed, keyboard focus, and disabled visual states in both themes.
+Website-card Scan, Profiles, Edit, and Delete actions share a single horizontal action row.
+On narrow screens the row scrolls horizontally rather than wrapping. Buttons use common hover,
+pressed, keyboard focus, and disabled visual states in both themes.
 
-The Overview uses separate full-width surfaces for worker status, Review and investigation navigation, the five KPI cards, and analytics. Page diagnostics uses the shared `SlideOver` built on `Dialog` instead of a separate fixed overlay; Escape, backdrop close, focus trapping, scroll locking, and focus return follow the same rules as centered dialogs. Unsaved-change prompts, configuration import approval, sign-out, and reviewed-patch application use custom `ConfirmDialog` controls instead of browser-native `confirm()`. On tablet and desktop drawer widths, resource search/type/order filters occupy one row; on narrow phones they stack to remain usable.
+## Historical HTTP status classification (local-only, opt-in)
+
+The live Routes table now includes **All, Successful, Warnings, Failed, Resolved** tabs with server-derived counts, filtering, pagination, and server sorting. Successful responses with only recognized non-fatal audit findings are warnings; browser/runtime/network failures remain failures even with HTTP 200. Resolved is specifically a newly verified successful observation linked to a `verified_resolved` finding, not merely an HTTP 200.
+
+The existing scanner reports are immutable evidence. To preview safe classification corrections without modifying MongoDB:
+
+```bash
+npm run data:check > /tmp/website-auditor-before.json
+npm run data:classification:preview
+```
+
+Review `eligible`, `ambiguousRequireReview` and `skippedActiveScan`. Only with a current database backup and authorization:
+
+```bash
+npm run data:classification:apply
+npm run data:check > /tmp/website-auditor-after.json
+npm run verify
+```
+
+The migration is additive/idempotent: it preserves page IDs, screenshots, issue/review history, and existing RustFS reports, appends classification-audit events, and updates affected completed scan totals/statuses. It backfills warning-only findings only for the latest observation of each site/profile/route; older resolved findings are never automatically reopened. A private original-value backup and a timestamped summary are written under `storage/test-reports/migrations/`. The preview alone makes **no data changes**. Ambiguous 2xx failures (`Object`, unexplained framework errors, unconfirmed runtime exceptions, no supporting issues/warnings) are **not** silently downgraded; they require an independently verified retry. Historical static RustFS reports remain unchanged as originally generated.
+
+New warning and error badges derive from the same MongoDB active finding records; the Route counts endpoint reads all matching records and is not constrained by the dashboard's limited page cache. Routes and active-finding counts refresh after actions and on the existing 2.5-second polling cycle. Do not reset MongoDB or RustFS to correct counts.
+
+### Read-only action and pagination discovery (2026-10-31)
+
+Crawl scans now inspect a bounded sample (up to eight) of menu triggers, including Filament table row action dropdowns, and one nested submenu level. Visible, scoped, safe GET links from Edit/View/Create menus are queued as normal pages, deduplicated and constrained by depth/page limits. GET pagination anchors and a bounded sample of explicitly declared Livewire `gotoPage` / `nextPage` query routes are also discoverable; the auditor **does not invoke Livewire component methods** to paginate.
+
+The scanner never presses Delete, Save, Submit, Pay, bulk actions or unknown record-action buttons. Livewire-only modal/drawer actions are retained as `discoveredInteractions` with `executed: false` and are **not considered tested or visited**. Menu inspection denies non-GET requests even if optional background compatibility is enabled, but site operators must still authorize targets with caution: target-side JavaScript/GET handlers may have side effects that cannot be proven away by the auditor. Scans remain limited to configured approved hosts, ports, and authentication profiles.
+
+`progress.discovered` is the number of known distinct routes (visited, skipped, or pending); `progress.visited` is the number of persisted page observations; `progress.skipped` denotes known ineligible or blocked routes; pass/warning/fail counts partition **pages**, not individual active finding records. The Active Errors badge counts current `open` and `reopened` finding records across historical scans. Manual Review and verified resolutions remain separate. Refreshing a page does not erase prior scan or finding evidence.
+
+An HTTP 401/403 response to an unauthenticated scan is treated as an expected authentication warning only if the response explicitly presents an authentication challenge. Generic 4xx and every HTTP 5xx remain failures; genuine runtime exceptions also remain failures even when the document returns HTTP 200. Historical records are unchanged; use the existing classification migration preview and manual review workflow before making historical corrections.
+
+**Verification:** Inspect at least one authenticated Filament 5 policy listing, dropdown Edit link, pagination URL, Livewire-only modal action, and unauthenticated protected page in your staging environment. Since Livewire component-specific pagination can be held entirely in server session state, GET query sampling might not reproduce the same page. This mode intentionally does not attempt side-effectful Livewire pagination calls.

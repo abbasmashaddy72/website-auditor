@@ -116,6 +116,7 @@ type Scan = {
     passed: number;
     failed: number;
     warnings: number;
+    skipped?: number;
     currentUrl?: string;
   };
 };
@@ -276,6 +277,25 @@ export default function Dashboard({ section }: { section: string }) {
     [proposal, setProposal] = useState(''),
     [comparison, setComparison] = useState<{ current: Page; previous: Page | null } | null>(null),
     [previousHtml, setPreviousHtml] = useState('');
+  const [findingCounts, setFindingCounts] = useState<{
+    all: number;
+    errors: number;
+    warnings: number;
+    groups: number;
+  } | null>(null);
+  const [routeTab, setRouteTab] = useState<'all' | 'successful' | 'warnings' | 'failed' | 'resolved'>('all');
+  const [routePage, setRoutePage] = useState(0);
+  const [routeSort, setRouteSort] = useState<{ id: string; direction: 'asc' | 'desc' }>({
+    id: 'seen',
+    direction: 'desc',
+  });
+  const [routeResult, setRouteResult] = useState<{
+    items: Page[];
+    total: number;
+    counts: Record<'all' | 'successful' | 'warnings' | 'failed' | 'resolved', number>;
+    page: number;
+    limit: number;
+  } | null>(null);
   const [findingTab, setFindingTab] = useState<'all' | 'errors' | 'warnings' | 'grouped'>('all');
   const [scanTab, setScanTab] = useState<'all' | 'direct' | 'batch' | 'running' | 'completed' | 'failed'>(
     'all',
@@ -394,6 +414,11 @@ export default function Dashboard({ section }: { section: string }) {
       if (section === 'routes' || section === 'errors' || section === 'resolved') {
         setResultSite(query.get('site') || '');
         setResultScan(query.get('scan') || '');
+        if (section === 'routes') {
+          const tab = query.get('status') || 'all';
+          if (['all', 'successful', 'warnings', 'failed', 'resolved'].includes(tab))
+            setRouteTab(tab as typeof routeTab);
+        }
       }
     }, 0);
     return () => window.clearTimeout(initial);
@@ -414,6 +439,75 @@ export default function Dashboard({ section }: { section: string }) {
     }, 0);
     return () => window.clearTimeout(initial);
   }, []);
+  useEffect(() => {
+    if (section !== 'routes') return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      const params = new URLSearchParams({
+        status: routeTab,
+        profile: resultProfile,
+        page: String(routePage),
+        sort: routeSort.id,
+        dir: routeSort.direction,
+      });
+      if (resultSite) params.set('siteId', resultSite);
+      if (resultScan) params.set('scanId', resultScan);
+      if (search.trim()) params.set('q', search.trim());
+      try {
+        const response = await fetch(`/api/routes?${params}`, {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `Route request HTTP ${response.status}`);
+        if (!controller.signal.aborted) setRouteResult(payload);
+      } catch (error) {
+        if (!controller.signal.aborted) setError(error instanceof Error ? error.message : String(error));
+      }
+    }, 150);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [
+    section,
+    routeTab,
+    routePage,
+    routeSort.id,
+    routeSort.direction,
+    resultSite,
+    resultScan,
+    resultProfile,
+    search,
+    updatedAt,
+  ]);
+
+  useEffect(() => {
+    if (section !== 'errors') return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      const params = new URLSearchParams({ profile: resultProfile });
+      if (resultSite) params.set('siteId', resultSite);
+      if (resultScan) params.set('scanId', resultScan);
+      if (search.trim()) params.set('q', search.trim());
+      try {
+        const response = await fetch(`/api/issues/counts?${params}`, {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Finding count HTTP ${response.status}`);
+        if (!controller.signal.aborted) setFindingCounts(data);
+      } catch (e) {
+        if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+      }
+    }, 150);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [section, resultSite, resultScan, resultProfile, search, updatedAt]);
+
   async function signOut() {
     setPending('logout');
     setError('');
@@ -534,9 +628,6 @@ export default function Dashboard({ section }: { section: string }) {
     setProfileForm(initialProfile);
     setProfileInitial(JSON.stringify(initialProfile));
     setShowProfile(true);
-  }
-  function filteredPageCount(scanId: string): number {
-    return pages.filter((item) => item.scanId === scanId).length;
   }
   function name(siteId: string) {
     return sites.find((s) => s._id === siteId)?.name || 'Unknown site';
@@ -1088,13 +1179,8 @@ export default function Dashboard({ section }: { section: string }) {
       ),
     },
   ];
-  const routeRows = pages.filter(
-    (page) =>
-      filtered(`${page.url} ${page.title}`) &&
-      (!resultSite || page.siteId === resultSite) &&
-      (!resultScan || page.scanId === resultScan) &&
-      (resultProfile === '*' || (page.authProfileId || '') === resultProfile),
-  );
+  // Routes use server-filtered, server-counted pages; the 500-row dashboard cache is not authoritative.
+  const routeRows = routeResult?.items || [];
   const failedPageRows = pages.filter(
     (page) =>
       page.classification === 'failed' &&
@@ -1127,6 +1213,12 @@ export default function Dashboard({ section }: { section: string }) {
           </div>
         </>
       ),
+    },
+    {
+      id: 'seen',
+      header: 'Captured',
+      accessor: (page) => page.capturedAt,
+      render: (page) => date(page.capturedAt),
     },
     { id: 'status', header: 'HTTP', accessor: (page) => page.status, render: (page) => page.status ?? '—' },
     {
@@ -1351,8 +1443,26 @@ export default function Dashboard({ section }: { section: string }) {
               <v.icon size={18} />
               {v.name}
               {v.id === 'errors' && (summary?.issues ?? 0) > 0 && (
-                <span className="ml-auto rounded-md bg-[#ffe2e3] px-2 text-xs text-[#b32838]">
-                  {summary?.issues ?? 0}
+                <span
+                  className="ml-auto flex gap-1"
+                  title="Active finding records across all scans (not failed-page counts)"
+                >
+                  {(summary?.errorIssues ?? 0) > 0 && (
+                    <span
+                      aria-label="Active errors"
+                      className="rounded-md bg-[#ffe2e3] px-2 text-xs text-[#b32838]"
+                    >
+                      {summary?.errorIssues}
+                    </span>
+                  )}
+                  {(summary?.warningIssues ?? 0) > 0 && (
+                    <span
+                      aria-label="Active warnings"
+                      className="rounded-md bg-amber-100 px-2 text-xs text-amber-800"
+                    >
+                      {summary?.warningIssues}
+                    </span>
+                  )}
                 </span>
               )}
               {v.id === 'resolved' && (summary?.resolved ?? 0) > 0 && (
@@ -1409,8 +1519,7 @@ export default function Dashboard({ section }: { section: string }) {
             onClick={() =>
               setConfirmation({
                 title: 'Sign out?',
-                description:
-                  'This ends your Website Auditor session but does not sign out of audited websites.',
+                description: 'End your Website Auditor session? This does not sign out of audited websites.',
                 confirmLabel: 'Sign out',
                 onConfirm: () => void signOut(),
               })
@@ -1784,15 +1893,15 @@ export default function Dashboard({ section }: { section: string }) {
                           </td>
                           <td className="min-w-52">
                             <div className="mb-2 text-xs">
-                              {sc.progress.visited} visited / {sc.progress.discovered} discovered ·{' '}
-                              {filteredPageCount(sc._id)} shown{' '}
+                              {sc.progress.visited} visited / {sc.progress.discovered} discovered{' '}
+                              {sc.progress.skipped ? `· ${sc.progress.skipped} skipped ` : ''}
                               <span className="muted">· {sc.phase || sc.status}</span>
                             </div>
                             <div className="progress-track">
                               <div
                                 className="progress-fill"
                                 style={{
-                                  width: `${Math.min(100, (100 * sc.progress.visited) / Math.max(1, sc.progress.discovered))}%`,
+                                  width: `${Math.min(100, (100 * (sc.progress.visited + (sc.progress.skipped || 0))) / Math.max(1, sc.progress.discovered))}%`,
                                 }}
                               />
                             </div>
@@ -1982,7 +2091,10 @@ export default function Dashboard({ section }: { section: string }) {
                     section === 'routes' ? 'Filter discovered routes…' : 'Search errors, URL or category…'
                   }
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setRoutePage(0);
+                  }}
                 />
                 <select
                   aria-label="Filter results by website"
@@ -1990,6 +2102,7 @@ export default function Dashboard({ section }: { section: string }) {
                   value={resultSite}
                   onChange={(e) => {
                     setResultSite(e.target.value);
+                    setRoutePage(0);
                     setResultScan('');
                     setSelectedIssues([]);
                     setSelectedFailedPages([]);
@@ -2008,6 +2121,7 @@ export default function Dashboard({ section }: { section: string }) {
                   value={resultProfile}
                   onChange={(e) => {
                     setResultProfile(e.target.value);
+                    setRoutePage(0);
                     setSelectedIssues([]);
                     setSelectedFailedPages([]);
                   }}
@@ -2026,6 +2140,7 @@ export default function Dashboard({ section }: { section: string }) {
                   value={resultScan}
                   onChange={(e) => {
                     setResultScan(e.target.value);
+                    setRoutePage(0);
                     setSelectedIssues([]);
                     setSelectedFailedPages([]);
                   }}
@@ -2041,6 +2156,28 @@ export default function Dashboard({ section }: { section: string }) {
                 </select>
                 <Filter size={17} className="muted" />
               </div>
+              {section === 'routes' && (
+                <TabBar
+                  label="Route status"
+                  value={routeTab}
+                  onChange={(value) => {
+                    const next = value as typeof routeTab;
+                    setRouteTab(next);
+                    setRoutePage(0);
+                    const url = new URL(window.location.href);
+                    if (next === 'all') url.searchParams.delete('status');
+                    else url.searchParams.set('status', next);
+                    window.history.replaceState(null, '', url.pathname + url.search);
+                  }}
+                  tabs={[
+                    { value: 'all', label: 'All', count: routeResult?.counts.all ?? 0 },
+                    { value: 'successful', label: 'Successful', count: routeResult?.counts.successful ?? 0 },
+                    { value: 'warnings', label: 'Warnings', count: routeResult?.counts.warnings ?? 0 },
+                    { value: 'failed', label: 'Failed', count: routeResult?.counts.failed ?? 0 },
+                    { value: 'resolved', label: 'Resolved', count: routeResult?.counts.resolved ?? 0 },
+                  ]}
+                />
+              )}
               {section === 'errors' && !resultScan && (
                 <TabBar
                   label="Active finding categories"
@@ -2050,27 +2187,21 @@ export default function Dashboard({ section }: { section: string }) {
                     setSelectedIssues([]);
                   }}
                   tabs={[
-                    { value: 'all', label: 'All active', count: eligibleIssues.length },
+                    { value: 'all', label: 'All active', count: findingCounts?.all ?? summary?.issues ?? 0 },
                     {
                       value: 'errors',
                       label: 'Errors',
-                      count:
-                        !search && !resultSite && resultProfile === '*'
-                          ? (summary?.errorIssues ?? 0)
-                          : eligibleIssues.filter((f) => findingSeverity(f) === 'error').length,
+                      count: findingCounts?.errors ?? summary?.errorIssues ?? 0,
                     },
                     {
                       value: 'warnings',
                       label: 'Warnings',
-                      count:
-                        !search && !resultSite && resultProfile === '*'
-                          ? (summary?.warningIssues ?? 0)
-                          : eligibleIssues.filter((f) => findingSeverity(f) === 'warning').length,
+                      count: findingCounts?.warnings ?? summary?.warningIssues ?? 0,
                     },
                     {
                       value: 'grouped',
                       label: 'Detected issue groups',
-                      count: groupActiveFindings(activeFindingRows).length,
+                      count: findingCounts?.groups ?? groupActiveFindings(activeFindingRows).length,
                     },
                   ]}
                 />
@@ -2168,14 +2299,42 @@ export default function Dashboard({ section }: { section: string }) {
                 </div>
               )}
               {section === 'routes' ? (
-                <DataTable
-                  rows={routeRows}
-                  columns={routeColumns}
-                  rowKey={(page) => page._id}
-                  caption="Discovered routes"
-                  initialSort="page"
-                  emptyMessage="No routes match these filters. Run a scan to populate diagnostics."
-                />
+                <div className="space-y-3">
+                  <DataTable
+                    rows={routeRows}
+                    columns={routeColumns}
+                    rowKey={(page) => page._id}
+                    caption="Discovered routes"
+                    sortState={routeSort}
+                    onSortChange={(sort) => {
+                      setRouteSort(sort);
+                      setRoutePage(0);
+                    }}
+                    emptyMessage="No routes match these filters. Run a scan to populate diagnostics."
+                  />
+                  <div className="surface flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
+                    <span className="muted">
+                      {routeResult?.total ?? 0} matching routes · Page {routePage + 1} of{' '}
+                      {Math.max(1, Math.ceil((routeResult?.total ?? 0) / 50))}
+                    </span>
+                    <div className="flex gap-2">
+                      <ActionButton
+                        disabled={routePage === 0}
+                        size="small"
+                        onClick={() => setRoutePage((current) => Math.max(0, current - 1))}
+                      >
+                        Previous
+                      </ActionButton>
+                      <ActionButton
+                        disabled={(routePage + 1) * 50 >= (routeResult?.total ?? 0)}
+                        size="small"
+                        onClick={() => setRoutePage((current) => current + 1)}
+                      >
+                        Next
+                      </ActionButton>
+                    </div>
+                  </div>
+                </div>
               ) : resultScan ? (
                 <DataTable
                   rows={failedPageRows}
@@ -2908,7 +3067,7 @@ export default function Dashboard({ section }: { section: string }) {
           }
         >
           <div className="space-y-5">
-            <div className="ui-diagnostics-actions flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Status value={detail.classification} />
               <span className="muted text-xs">
                 HTTP {detail.status ?? '—'} · {detail.durationMs} ms

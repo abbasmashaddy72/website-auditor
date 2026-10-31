@@ -6,6 +6,7 @@ export function canVerifyResolution(page: PageResult): boolean {
   return (
     page.classification === 'passed' &&
     page.issues.length === 0 &&
+    (page.warnings?.length ?? 0) === 0 &&
     page.status !== undefined &&
     page.status >= 200 &&
     page.status < 300 &&

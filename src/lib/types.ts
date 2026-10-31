@@ -72,6 +72,13 @@ export interface Scan {
   urls?: string[];
   options?: Partial<Pick<Site, 'maxPages' | 'maxDepth' | 'concurrency' | 'timeoutMs'>>;
   status: ScanState;
+  classificationHistory?: Array<{
+    at: Date;
+    migration: string;
+    previousStatus: ScanState;
+    previousProgress: Scan['progress'];
+    updatedStatus: ScanState;
+  }>;
   activeKey?: string;
   createdAt: Date;
   startedAt?: Date;
@@ -84,6 +91,7 @@ export interface Scan {
     passed: number;
     failed: number;
     warnings: number;
+    skipped?: number;
     currentUrl?: string;
   };
   cancelRequested?: boolean;
@@ -106,6 +114,13 @@ export interface PageResult {
   title: string;
   durationMs: number;
   classification: 'passed' | 'warning' | 'failed';
+  classificationHistory?: Array<{
+    at: Date;
+    from: 'failed';
+    to: 'warning';
+    reason: string;
+    migration: string;
+  }>;
   issues: Array<{ category: string; message: string }>;
   warnings?: string[];
   consoleErrors: string[];
@@ -114,6 +129,12 @@ export interface PageResult {
   evidence: Record<string, string>;
   capturedAt: Date;
   discoveredLinks?: string[];
+  discoveredInteractions?: Array<{
+    label: string;
+    kind: 'modal' | 'drawer' | 'livewire-action';
+    executed: false;
+  }>;
+  expectedAuthentication?: boolean;
   performance?: PageTiming;
 }
 export interface Issue {

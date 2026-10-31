@@ -2,6 +2,7 @@ import { database } from './db';
 import { createHash } from 'node:crypto';
 import type { Issue, PageResult } from './types';
 import { activeFindingsForVerification, canVerifyResolution, verifiedSnapshot } from './resolution';
+import { pageFindings } from './finding-records';
 function fingerprint(url: string, category: string, message: string): string {
   return createHash('sha256')
     .update([url, category, message.slice(0, 160)].join('|'))
@@ -30,8 +31,11 @@ export async function recordPageIssues(page: PageResult): Promise<void> {
     });
     return;
   }
-  if (page.issues.length === 0) return; // warnings do not verify an earlier failure as resolved
-  for (const item of page.issues) {
+  // Warning-only page diagnostics also need durable issue records so the Active Warnings
+  // badge, review queue and summary all count the same source of truth.
+  const findings = pageFindings(page);
+  if (findings.length === 0) return;
+  for (const item of findings) {
     const fp = fingerprint(page.url, item.category, item.message),
       collection = db.collection<Issue>('issues');
     const where = { siteId: page.siteId, authProfileId: page.authProfileId, fingerprint: fp };

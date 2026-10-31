@@ -36,7 +36,9 @@
     "verify": "bash scripts/verify.sh",
     "worker:run": "tsx worker/index.ts",
     "cleanup:check": "python3 scripts/cleanup.py --check",
-    "cleanup": "python3 scripts/cleanup.py --apply"
+    "cleanup": "python3 scripts/cleanup.py --apply",
+    "data:classification:preview": "tsx scripts/migrate-http-warnings.ts --preview",
+    "data:classification:apply": "tsx scripts/migrate-http-warnings.ts --apply"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.900.0",
